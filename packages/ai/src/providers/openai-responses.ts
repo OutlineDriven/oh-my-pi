@@ -387,7 +387,7 @@ function createClient(
 	};
 }
 
-function getOpenAIResponsesCacheSessionId(
+export function getOpenAIResponsesCacheSessionId(
 	options: Pick<OpenAIResponsesOptions, "cacheRetention" | "sessionId"> | undefined,
 ): string | undefined {
 	return resolveCacheRetention(options?.cacheRetention) === "none"
