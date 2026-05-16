@@ -36,6 +36,7 @@ from robomp.manual_triage import (
     enqueue_manual_triage,
     parse_issue_ref,
 )
+from robomp.natives_cache import NativesCache
 from robomp.proxy_client import GitHubProxyClient, ProxyGitTransport
 from robomp.queue import WorkerPool
 from robomp.sandbox import SandboxManager
@@ -237,7 +238,18 @@ def _build_orchestrator(cfg: Settings) -> tuple[GitHubBackend, ProxyGitTransport
 def _build_state(settings: Settings) -> dict[str, Any]:
     db = get_database(settings.sqlite_path)
     github, git_transport = _build_orchestrator(settings)
-    sandbox = SandboxManager(settings.workspace_root, transport=git_transport)
+    natives_cache: NativesCache | None = None
+    if settings.natives_cache_enabled:
+        natives_cache = NativesCache(
+            settings.natives_cache_root,
+            max_entries_per_repo=settings.natives_cache_max_entries_per_repo,
+            max_bytes=settings.natives_cache_max_bytes,
+        )
+    sandbox = SandboxManager(
+        settings.workspace_root,
+        transport=git_transport,
+        natives_cache=natives_cache,
+    )
     pool = WorkerPool(settings=settings, db=db, github=github, sandbox=sandbox, git_transport=git_transport)
     autoclose = AutocloseScheduler(settings=settings, db=db, github=github)
     return {
@@ -246,6 +258,7 @@ def _build_state(settings: Settings) -> dict[str, Any]:
         "github": github,
         "git_transport": git_transport,
         "sandbox": sandbox,
+        "natives_cache": natives_cache,
         "pool": pool,
         "issue_browse_cache": _IssueBrowseCache(),
         "autoclose": autoclose,

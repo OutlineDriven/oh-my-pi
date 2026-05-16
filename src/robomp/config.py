@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     question_autoclose_hours: float = Field(4.0, alias="ROBOMP_QUESTION_AUTOCLOSE_HOURS")
     question_autoclose_scan_seconds: float = Field(60.0, alias="ROBOMP_QUESTION_AUTOCLOSE_SCAN_SECONDS")
 
+    # pi-natives build-output cache. Hardlinks pre-built
+    # `packages/natives/native/*.node` (and its companions) into new
+    # workspaces keyed by the git tree-hashes of inputs that determine the
+    # build output. Misses are captured automatically when a task that
+    # finishes successfully has fresh artifacts. Disable to fall back to
+    # per-workspace builds.
+    natives_cache_enabled: bool = Field(True, alias="ROBOMP_NATIVES_CACHE_ENABLED")
+    natives_cache_root: Path = Field(Path("/data/cache/pi-natives"), alias="ROBOMP_NATIVES_CACHE_ROOT")
+    natives_cache_max_entries_per_repo: int = Field(8, alias="ROBOMP_NATIVES_CACHE_MAX_ENTRIES_PER_REPO")
+    natives_cache_max_bytes: int = Field(4 * 1024**3, alias="ROBOMP_NATIVES_CACHE_MAX_BYTES")
+    natives_cache_gc_interval_seconds: float = Field(3600.0, alias="ROBOMP_NATIVES_CACHE_GC_INTERVAL_SECONDS")
+
     @field_validator("bot_login", mode="after")
     @classmethod
     def _require_bot_login(cls, value: str) -> str:

@@ -17,6 +17,8 @@ from robomp import host_tools
 from robomp.db import Database
 from robomp.github_backend import GitHubBackend
 from robomp.github_client import IssueInfo, RepoInfo
+from robomp.natives_cache import NativesCache
+from robomp.natives_cache import compute_key as natives_compute_key
 from robomp.sandbox import LocalGitTransport, SandboxManager, Workspace
 
 pytestmark = pytest.mark.skipif(
@@ -333,3 +335,148 @@ def test_git_pool_metadata_survives_root_push_and_retry_slot(
     ).stdout.strip()
     assert remote_retry_head == retry_head
     assert retry_head != first_head
+
+
+def _prepare_shared_natives_cache(slot_tmp_path: Path) -> NativesCache:
+    """Provision `/data/cache/pi-natives` shape (root:omp, setgid 2770)."""
+    cache_root = slot_tmp_path / "cache" / "pi-natives"
+    cache_root.mkdir(parents=True)
+    os.chown(cache_root, 0, _SHARED_OMP_GID)
+    cache_root.chmod(0o2770)
+    return NativesCache(cache_root)
+
+
+def _stage_built_natives(bindings: host_tools.ToolBindings, *, body: str = "ELFx") -> None:
+    """Mirror what a napi build would leave in `packages/natives/native/`.
+
+    Writes the four cached files AS THE SLOT so ownership matches a real
+    post-build workspace; capture pulls these into the cache.
+    """
+    _write_as_slot(bindings, "packages/natives/native/pi_natives.linux-arm64.node", body)
+    _write_as_slot(bindings, "packages/natives/native/index.d.ts", "export const X: number;\n")
+    _write_as_slot(bindings, "packages/natives/native/index.js", "export const X = 1;\n")
+    _write_as_slot(
+        bindings,
+        "packages/natives/native/embedded-addon.js",
+        "export const embeddedAddon = null;\n",
+    )
+
+
+def test_natives_cache_shares_artifacts_across_slot_workspaces(
+    slot_tmp_path: Path,
+    upstream_repo: Path,
+    db: Database,
+    tool_loop: asyncio.AbstractEventLoop,
+) -> None:
+    """End-to-end: capture under slot 1, populate under slot 2, prove that:
+
+    1. A capture from a slot-owned workspace lands in the shared cache with
+       group `omp` setgid inheritance so any other slot can read it.
+    2. ensure_workspace under a different slot UID auto-populates the cached
+       `.node` (hardlink, inode shared) and copies the companions.
+    3. Slot 2 can read the populated `.node`, and a temp-rename rebuild
+       (mirroring napi's `installBinary`) leaves the cache entry intact.
+    4. An in-place truncate-rewrite of a companion (mirroring `gen-enums.ts`
+       / `installGeneratedBindings`) does NOT mutate the cached companion —
+       this is exactly why companions are copied, not hardlinked.
+    """
+    _require_linux_root_toolchain()
+    workspaces = slot_tmp_path / "workspaces"
+    natives_cache = _prepare_shared_natives_cache(slot_tmp_path)
+    manager = SandboxManager(
+        workspaces,
+        transport=LocalGitTransport(token=None),
+        natives_cache=natives_cache,
+    )
+
+    # --- Workspace 1: stage built artifacts and capture them as the orchestrator. ---
+    ws1 = manager.ensure_workspace(
+        repo=_REPO,
+        number=301,
+        title="natives cache producer",
+        clone_url=str(upstream_repo),
+        default_branch="main",
+        author_name=_AUTHOR_NAME,
+        author_email=_AUTHOR_EMAIL,
+        slot_uid=_SLOT_ONE,
+    )
+    bindings1 = _bindings(db=db, tool_loop=tool_loop, workspace=ws1, upstream=upstream_repo, slot_uid=_SLOT_ONE)
+    _stage_built_natives(bindings1, body="ELFx-original")
+
+    key = natives_compute_key(ws1.repo_dir, target="linux-arm64")
+    native_dir1 = ws1.repo_dir / "packages" / "natives" / "native"
+    stored = natives_cache.capture(_REPO, key, native_dir1, source_workspace=ws1.workspace_key)
+    assert stored is not None
+    cached_node = stored / "pi_natives.linux-arm64.node"
+    cached_companion = stored / "index.d.ts"
+    # Cache root is setgid `omp`; new files inherit gid `omp` so any slot
+    # with `extra_groups=[omp]` can read them.
+    assert cached_node.stat().st_gid == _SHARED_OMP_GID
+    assert cached_companion.stat().st_gid == _SHARED_OMP_GID
+
+    # --- Workspace 2: a different slot UID gets auto-populated on ensure. ---
+    ws2 = manager.ensure_workspace(
+        repo=_REPO,
+        number=302,
+        title="natives cache consumer",
+        clone_url=str(upstream_repo),
+        default_branch="main",
+        author_name=_AUTHOR_NAME,
+        author_email=_AUTHOR_EMAIL,
+        slot_uid=_SLOT_TWO,
+    )
+    bindings2 = _bindings(db=db, tool_loop=tool_loop, workspace=ws2, upstream=upstream_repo, slot_uid=_SLOT_TWO)
+    native_dir2 = ws2.repo_dir / "packages" / "natives" / "native"
+    ws2_node = native_dir2 / "pi_natives.linux-arm64.node"
+    ws2_companion = native_dir2 / "index.d.ts"
+    assert ws2_node.exists(), "auto-populate must hardlink the .node into ws2"
+    assert ws2_companion.exists(), "auto-populate must copy companions into ws2"
+
+    # The .node is hardlinked: same inode, nlink ≥ 2.
+    assert ws2_node.stat().st_ino == cached_node.stat().st_ino
+    assert cached_node.stat().st_nlink >= 2
+    # The companion is COPIED: independent inode.
+    assert ws2_companion.stat().st_ino != cached_companion.stat().st_ino
+
+    # Slot 2 must be able to read the populated artifacts (group omp + 0660
+    # via setgid inheritance from the cache root).
+    _run_ok(bindings2, ["test", "-r", "packages/natives/native/pi_natives.linux-arm64.node"])
+    _run_ok(bindings2, ["test", "-r", "packages/natives/native/index.d.ts"])
+
+    # --- Rebuild simulation: napi's installBinary does temp + rename. ---
+    # Mirrors `fs.copyFile(src, tempPath); fs.rename(tempPath, dest)`.
+    _run_ok(
+        bindings2,
+        [
+            "python3",
+            "-c",
+            (
+                "import os, sys; "
+                "dest = sys.argv[1]; "
+                "tmp = dest + '.tmp.rebuild'; "
+                "open(tmp, 'wb').write(b'REBUILT'); "
+                "os.rename(tmp, dest)"
+            ),
+            "packages/natives/native/pi_natives.linux-arm64.node",
+        ],
+    )
+    # Workspace sees the rebuilt bytes; cache is untouched (new inode in ws).
+    assert ws2_node.read_bytes() == b"REBUILT"
+    assert cached_node.read_bytes() == b"ELFx-original"
+    assert ws2_node.stat().st_ino != cached_node.stat().st_ino
+
+    # --- Companion-rewrite simulation: gen-enums.ts open-truncate-writes. ---
+    # Mirrors `await Bun.write(jsPath, js)` / Python `Path.write_text`.
+    _write_as_slot(
+        bindings2,
+        "packages/natives/native/index.d.ts",
+        "// regenerated by gen-enums\n",
+    )
+    assert ws2_companion.read_text() == "// regenerated by gen-enums\n"
+    # Cache copy stays at its original content — copies absorbed the rewrite.
+    assert cached_companion.read_text() == "export const X: number;\n"
+
+    # --- Recapture from ws2 (different key now — but same key here since
+    #     tree didn't change) is idempotent under the flock. ---
+    again = natives_cache.capture(_REPO, key, native_dir2, source_workspace=ws2.workspace_key)
+    assert again is not None and again == stored, "second capture must reuse the same entry"

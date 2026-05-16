@@ -656,3 +656,115 @@ async def test_run_rpc_skips_reminder_when_unclassified(tmp_path: Path, settings
         loop.close()
     fake = _FakeRpcClient.instances[0]
     assert len(fake.prompts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Natives-cache capture-on-success
+# ---------------------------------------------------------------------------
+
+
+class _RecordingNativesCache:
+    """Test double for `NativesCache`: records `capture` calls, optionally
+    raises so we can verify exception swallowing."""
+
+    def __init__(self, *, raise_on_capture: bool = False) -> None:
+        self.capture_calls: list[tuple[str, str, Path]] = []
+        self.raise_on_capture = raise_on_capture
+
+    def capture(self, repo: str, key: str, native_dir: Path, **_kwargs) -> Path | None:
+        self.capture_calls.append((repo, key, native_dir))
+        if self.raise_on_capture:
+            raise RuntimeError("simulated cache failure")
+        return native_dir
+
+
+def _make_capture_inputs(
+    tmp_path: Path,
+    settings: Settings,
+    *,
+    cache: _RecordingNativesCache | None,
+    with_native_artifacts: bool,
+) -> worker.TaskInputs:
+    """Build a `TaskInputs` whose workspace optionally has built natives."""
+    inputs, _ = _make_inputs(tmp_path, settings, session_has_jsonl=False)
+    # Replace the SimpleNamespace workspace with one carrying the fields
+    # `_capture_natives_cache` needs (workspace_key + repo_full_name).
+    ws = SimpleNamespace(
+        root=inputs.workspace.root,
+        session_dir=inputs.workspace.session_dir,
+        repo_dir=inputs.workspace.repo_dir,
+        branch=inputs.workspace.branch,
+        workspace_key="acme__widgets__1",
+        repo_full_name="acme/widgets",
+    )
+    if with_native_artifacts:
+        native_dir = ws.repo_dir / "packages" / "natives" / "native"
+        native_dir.mkdir(parents=True)
+        (native_dir / "pi_natives.linux-arm64.node").write_bytes(b"ELFx")
+        (native_dir / "index.d.ts").write_text("")
+        (native_dir / "index.js").write_text("")
+        (native_dir / "embedded-addon.js").write_text("")
+    return worker.TaskInputs(
+        settings=settings,
+        db=inputs.db,
+        github=inputs.github,
+        git_transport=inputs.git_transport,
+        repo=inputs.repo,
+        issue=inputs.issue,
+        workspace=ws,  # type: ignore[arg-type]
+        delivery_id=inputs.delivery_id,
+        attempts=inputs.attempts,
+        slot_uid=inputs.slot_uid,
+        natives_cache=cache,  # type: ignore[arg-type]
+    )
+
+
+def test_capture_natives_cache_no_op_without_cache(tmp_path: Path, settings: Settings) -> None:
+    inputs = _make_capture_inputs(tmp_path, settings, cache=None, with_native_artifacts=True)
+    # Just must not raise.
+    worker._capture_natives_cache(inputs)
+
+
+def test_capture_natives_cache_skips_without_artifacts(tmp_path: Path, settings: Settings) -> None:
+    cache = _RecordingNativesCache()
+    inputs = _make_capture_inputs(tmp_path, settings, cache=cache, with_native_artifacts=False)
+    worker._capture_natives_cache(inputs)
+    # No artifacts → no key compute, no capture.
+    assert cache.capture_calls == []
+
+
+def test_capture_natives_cache_swallows_key_compute_failure(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _RecordingNativesCache()
+    inputs = _make_capture_inputs(tmp_path, settings, cache=cache, with_native_artifacts=True)
+    # Repo dir is not a git repo → natives_compute_key raises.
+    # Already true for the SimpleNamespace workspace (repo_dir is plain tmp dir).
+    worker._capture_natives_cache(inputs)
+    assert cache.capture_calls == []
+
+
+def test_capture_natives_cache_swallows_capture_exception(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _RecordingNativesCache(raise_on_capture=True)
+    inputs = _make_capture_inputs(tmp_path, settings, cache=cache, with_native_artifacts=True)
+    # Bypass git: stub the key compute so capture is reached.
+    monkeypatch.setattr(worker, "natives_compute_key", lambda _repo_dir: "deadbeef")
+    # Must not propagate the RuntimeError.
+    worker._capture_natives_cache(inputs)
+    assert len(cache.capture_calls) == 1
+
+
+def test_capture_natives_cache_records_on_success(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _RecordingNativesCache()
+    inputs = _make_capture_inputs(tmp_path, settings, cache=cache, with_native_artifacts=True)
+    monkeypatch.setattr(worker, "natives_compute_key", lambda _repo_dir: "cafef00d")
+    worker._capture_natives_cache(inputs)
+    assert len(cache.capture_calls) == 1
+    repo, key, native_dir = cache.capture_calls[0]
+    assert repo == "acme/widgets"
+    assert key == "cafef00d"
+    assert native_dir == inputs.workspace.repo_dir / "packages" / "natives" / "native"

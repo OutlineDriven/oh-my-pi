@@ -96,6 +96,10 @@ class WorkerPool:
             log.info("recovered stuck events", extra={"count": recovered})
         # Single dispatcher loop is simpler than N workers; concurrency is gated by the slot pool.
         self._workers.append(asyncio.create_task(self._dispatch_loop(), name="robomp-dispatch"))
+        # Periodic natives-cache GC, if enabled. Sleep-first so a freshly
+        # restarted orchestrator doesn't burn CPU on a cold cache.
+        if self.sandbox.natives_cache is not None and self.settings.natives_cache_gc_interval_seconds > 0:
+            self._workers.append(asyncio.create_task(self._natives_cache_gc_loop(), name="robomp-natives-gc"))
 
     async def stop(self, *, drain_timeout: float = 25.0, kill_timeout: float = 5.0) -> None:
         """Halt the dispatcher, then drain (or kill) in-flight `_run_event` tasks.
@@ -153,6 +157,34 @@ class WorkerPool:
         # 4. Brief wait for the exception path / cancellation to settle.
         with suppress(TimeoutError):
             await asyncio.wait(still_running, timeout=kill_timeout)
+
+    async def _natives_cache_gc_loop(self) -> None:
+        """Periodic sweep over every per-repo cache directory.
+
+        Each iteration sleeps the configured interval first, then runs the
+        synchronous GC on a worker thread. Cancellation is the only exit;
+        any per-sweep failure is logged and the loop continues.
+        """
+        cache = self.sandbox.natives_cache
+        if cache is None:  # pragma: no cover — checked by caller
+            return
+        interval = self.settings.natives_cache_gc_interval_seconds
+        log.info("natives_cache gc loop online", extra={"interval": interval})
+        try:
+            while not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                    return  # stop was set during the wait
+                except TimeoutError:
+                    pass
+                try:
+                    evicted = await asyncio.to_thread(cache.gc)
+                    if evicted:
+                        log.info("natives_cache gc swept", extra={"evicted": evicted})
+                except Exception:
+                    log.exception("natives_cache gc raised")
+        except asyncio.CancelledError:
+            raise
 
     async def _dispatch_loop(self) -> None:
         log.info("dispatch loop online")

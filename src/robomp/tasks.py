@@ -285,6 +285,7 @@ async def triage_issue(
         delivery_id=delivery_id,
         attempts=attempts,
         slot_uid=slot_uid,
+        natives_cache=sandbox.natives_cache,
     )
     await run_task(task_kind="triage_issue", inputs=inputs)
 
@@ -346,6 +347,7 @@ async def handle_comment(
             delivery_id=delivery_id,
             attempts=attempts,
             slot_uid=slot_uid,
+            natives_cache=sandbox.natives_cache,
         )
         directive = await _attach_thread(github, directive, repo.full_name, issue.number, is_pr=False)
         await run_task(task_kind="triage_issue", inputs=inputs, directive=directive)
@@ -397,6 +399,7 @@ async def handle_comment(
             delivery_id=delivery_id,
             attempts=attempts,
             slot_uid=slot_uid,
+            natives_cache=sandbox.natives_cache,
         )
         directive = await _attach_thread(github, directive, repo.full_name, issue.number, is_pr=False)
         await run_task(task_kind="handle_comment", inputs=inputs, comment=comment, directive=directive)
@@ -424,6 +427,7 @@ async def handle_comment(
         delivery_id=delivery_id,
         attempts=attempts,
         slot_uid=slot_uid,
+        natives_cache=sandbox.natives_cache,
     )
     directive = await _attach_thread(github, directive, repo.full_name, issue.number, is_pr=False)
     await run_task(task_kind="handle_comment", inputs=inputs, comment=comment, directive=directive)
@@ -517,6 +521,7 @@ async def handle_review(
         delivery_id=delivery_id,
         attempts=attempts,
         slot_uid=slot_uid,
+        natives_cache=sandbox.natives_cache,
     )
     await run_task(
         task_kind="handle_review",
@@ -659,6 +664,7 @@ async def handle_pr_conversation(
         delivery_id=delivery_id,
         attempts=attempts,
         slot_uid=slot_uid,
+        natives_cache=sandbox.natives_cache,
     )
     directive = await _attach_thread(github, directive, repo_full, pr_number, is_pr=True)
     await run_task(task_kind="handle_comment", inputs=inputs, comment=comment, pr_number=pr_number, directive=directive)

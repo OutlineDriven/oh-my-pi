@@ -1514,6 +1514,8 @@ def test_webhook_maintainer_bypasses_rate_limit(
 class _RecordingSandbox:
     """Stand-in for SandboxManager: records calls, hands back a fake Workspace."""
 
+    natives_cache = None
+
     def __init__(self, tmp_root: Path) -> None:
         self.tmp_root = tmp_root
         self.ensure_calls: list[dict] = []

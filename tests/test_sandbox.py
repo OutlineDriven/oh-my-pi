@@ -1196,3 +1196,103 @@ def test_run_git_kills_hung_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         _run_git(["status"], cwd=tmp_path, token=None, timeout=0.5)
     assert exc.value.returncode == 124
     assert "timed out" in exc.value.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
+# NativesCache integration into ensure_workspace
+# ---------------------------------------------------------------------------
+
+
+def _seed_native_dir(repo_dir: Path) -> Path:
+    native_dir = repo_dir / "packages" / "natives" / "native"
+    native_dir.mkdir(parents=True, exist_ok=True)
+    return native_dir
+
+
+def test_ensure_workspace_without_cache_leaves_native_dir_untouched(tmp_path: Path, upstream_repo: Path) -> None:
+    mgr = SandboxManager(tmp_path / "workspaces")
+    ws = mgr.ensure_workspace(
+        repo="octo/widget",
+        number=10,
+        title="no cache",
+        clone_url=str(upstream_repo),
+        default_branch="main",
+        author_name="robomp-bot",
+        author_email="robomp-bot@example.invalid",
+    )
+    assert mgr.natives_cache is None
+    # No `packages/natives/native/` was tracked in the upstream, and no cache
+    # is configured → the directory wasn't created by populate.
+    assert not (ws.repo_dir / "packages" / "natives" / "native").exists()
+
+
+def test_ensure_workspace_populates_from_natives_cache(tmp_path: Path, upstream_repo: Path) -> None:
+    from robomp.natives_cache import NativesCache, compute_key, target_triple
+
+    cache = NativesCache(tmp_path / "natives-cache")
+    mgr = SandboxManager(tmp_path / "workspaces", natives_cache=cache)
+
+    # First workspace: stage built artifacts, capture under the workspace's key.
+    ws1 = mgr.ensure_workspace(
+        repo="octo/widget",
+        number=11,
+        title="producer",
+        clone_url=str(upstream_repo),
+        default_branch="main",
+        author_name="robomp-bot",
+        author_email="robomp-bot@example.invalid",
+    )
+    native_dir1 = _seed_native_dir(ws1.repo_dir)
+    # Mirror the napi build output set. The filename must match the live
+    # `target_triple()` value or the populate path won't recognize it.
+    triple = target_triple()
+    (native_dir1 / f"pi_natives.{triple}.node").write_bytes(b"ELFx")
+    (native_dir1 / "index.d.ts").write_text("export const X: number;\n")
+    (native_dir1 / "index.js").write_text("export const X = 1;\n")
+    (native_dir1 / "embedded-addon.js").write_text("export const embeddedAddon = null;\n")
+    key = compute_key(ws1.repo_dir)  # default target = target_triple()
+    assert cache.capture("octo/widget", key, native_dir1) is not None
+
+    # Second workspace on the same source HEAD: ensure_workspace auto-populates.
+    # We force the same key by pinning TARGET_VARIANT (only relevant on x64;
+    # harmless on arm64) — actually compute_key uses target_triple() at call
+    # time. To make the test platform-independent, override populate to use
+    # the same key explicitly.
+    ws2 = mgr.ensure_workspace(
+        repo="octo/widget",
+        number=12,
+        title="consumer",
+        clone_url=str(upstream_repo),
+        default_branch="main",
+        author_name="robomp-bot",
+        author_email="robomp-bot@example.invalid",
+    )
+    native_dir2 = ws2.repo_dir / "packages" / "natives" / "native"
+    # The auto-populate path used the real target_triple() — which matches
+    # the host that just captured. So the same key applies and files appear.
+    assert native_dir2.is_dir(), "populate should have created native/ on hit"
+    node_name = f"pi_natives.{triple}.node"
+    assert (native_dir2 / node_name).read_bytes() == b"ELFx"
+    # The .node is hardlinked, sharing the cache's inode.
+    cached_node = cache.entry_dir("octo/widget", key) / node_name
+    ws2_node = native_dir2 / node_name
+    assert cached_node.stat().st_ino == ws2_node.stat().st_ino
+
+
+def test_ensure_workspace_cache_miss_is_silent_noop(tmp_path: Path, upstream_repo: Path) -> None:
+    from robomp.natives_cache import NativesCache
+
+    cache = NativesCache(tmp_path / "empty-cache")
+    mgr = SandboxManager(tmp_path / "workspaces", natives_cache=cache)
+    ws = mgr.ensure_workspace(
+        repo="octo/widget",
+        number=13,
+        title="miss",
+        clone_url=str(upstream_repo),
+        default_branch="main",
+        author_name="robomp-bot",
+        author_email="robomp-bot@example.invalid",
+    )
+    # Cache is empty so the workspace ends up identical to the no-cache case.
+    assert ws.repo_dir.is_dir()
+    assert not (ws.repo_dir / "packages" / "natives" / "native").exists()

@@ -36,6 +36,8 @@ from robomp.db import Database, issue_key
 from robomp.github_backend import GitHubBackend
 from robomp.github_client import CommentInfo, IssueInfo, RepoInfo
 from robomp.host_tools import AbortController, ToolBindings, _git_identity_env
+from robomp.natives_cache import NativesCache
+from robomp.natives_cache import compute_key as natives_compute_key
 from robomp.sandbox import GitTransport, Workspace, _prepare_slot_runtime_env, _safe_directory_env
 
 log = logging.getLogger(__name__)
@@ -55,6 +57,7 @@ class TaskInputs:
     delivery_id: str
     attempts: int = 0
     slot_uid: int | None = None
+    natives_cache: NativesCache | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -618,14 +621,68 @@ async def run_task(
         directive=directive,
         resuming=resuming,
     )
-    return await asyncio.to_thread(
-        _run_rpc_blocking,
-        inputs,
-        task_kind=task_kind,
-        prompt=prompt,
-        loop=loop,
-        bindings=bindings,
-        directive=directive,
+    try:
+        result = await asyncio.to_thread(
+            _run_rpc_blocking,
+            inputs,
+            task_kind=task_kind,
+            prompt=prompt,
+            loop=loop,
+            bindings=bindings,
+            directive=directive,
+        )
+    except BaseException:
+        # Failed/aborted task: NEVER capture, the artifacts may be inconsistent
+        # with the source state and would poison the cache.
+        raise
+    else:
+        await asyncio.to_thread(_capture_natives_cache, inputs)
+        return result
+
+
+def _capture_natives_cache(inputs: TaskInputs) -> None:
+    """Best-effort: store the workspace's fresh natives under its current key.
+
+    Runs after a successful task on a worker thread. ANY failure is logged
+    and swallowed — cache errors NEVER fail a task.
+    """
+    cache = inputs.natives_cache
+    if cache is None:
+        return
+    workspace = inputs.workspace
+    native_dir = workspace.repo_dir / "packages" / "natives" / "native"
+    if not native_dir.exists():
+        return
+    try:
+        key = natives_compute_key(workspace.repo_dir)
+    except Exception as exc:
+        log.debug(
+            "natives_cache capture key compute failed",
+            extra={"workspace": workspace.workspace_key, "err": str(exc)},
+        )
+        return
+    try:
+        stored = cache.capture(
+            workspace.repo_full_name,
+            key,
+            native_dir,
+            source_workspace=workspace.workspace_key,
+        )
+    except Exception as exc:
+        log.warning(
+            "natives_cache capture failed",
+            extra={"workspace": workspace.workspace_key, "key": key, "err": str(exc)},
+        )
+        return
+    log.info(
+        "natives_cache",
+        extra={
+            "action": "stored" if stored is not None else "skip",
+            "workspace": workspace.workspace_key,
+            "repo": workspace.repo_full_name,
+            "key": key,
+            "cache_dir": str(stored) if stored else None,
+        },
     )
 
 

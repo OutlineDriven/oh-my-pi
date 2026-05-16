@@ -26,6 +26,8 @@ class _StubGitHub:
 class _StubSandbox:
     """Sentinel; queue tests don't touch the workspace pool."""
 
+    natives_cache = None
+
 
 class _StubGitTransport:
     """Sentinel; queue tests don't push."""
