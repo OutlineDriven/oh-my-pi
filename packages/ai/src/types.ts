@@ -114,6 +114,7 @@ export type KnownProvider =
 	| "cursor"
 	| "deepseek"
 	| "xai"
+	| "xai-oauth"
 	| "groq"
 	| "cerebras"
 	| "openrouter"

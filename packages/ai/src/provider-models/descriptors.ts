@@ -39,6 +39,7 @@ import {
 	vercelAiGatewayModelManagerOptions,
 	vllmModelManagerOptions,
 	xaiModelManagerOptions,
+	xaiOAuthModelManagerOptions,
 	xiaomiModelManagerOptions,
 	zenmuxModelManagerOptions,
 } from "./openai-compat";
@@ -153,6 +154,14 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
 		catalog("Fireworks", ["FIREWORKS_API_KEY"]),
 	),
 	descriptor("xai", "grok-4-fast-non-reasoning", config => xaiModelManagerOptions(config)),
+	catalogDescriptor(
+		"xai-oauth",
+		"grok-4.3",
+		config => xaiOAuthModelManagerOptions(config),
+		catalog("xAI Grok OAuth (SuperGrok)", ["XAI_OAUTH_TOKEN", "XAI_API_KEY"], {
+			oauthProvider: "xai-oauth",
+		}),
+	),
 	catalogDescriptor(
 		"deepseek",
 		"deepseek-v4-pro",
