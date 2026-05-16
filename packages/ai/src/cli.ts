@@ -80,6 +80,20 @@ async function login(provider: OAuthProvider): Promise<void> {
 				break;
 			}
 
+			case "xai-oauth": {
+				const { loginXAIOAuth } = await import("./utils/oauth/xai-oauth");
+				credentials = await loginXAIOAuth({
+					onAuth(info) {
+						const { url } = info;
+						console.log(`\nOpen this URL in your browser:\n${url}\n`);
+					},
+					onProgress(message) {
+						console.log(message);
+					},
+				});
+				break;
+			}
+
 			case "github-copilot": {
 				const { loginGitHubCopilot } = await import("./utils/oauth/github-copilot");
 				credentials = await loginGitHubCopilot({
