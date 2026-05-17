@@ -642,15 +642,13 @@ const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 // strings; the chat picker MUST exclude these prefixes or selecting them 400s.
 const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
 
-// xAI's Responses endpoint accepts only `low`, `medium`, `high` for
-// `reasoning.effort` across the Grok family. Both `minimal` and `xhigh` are
-// rejected with HTTP 400 ("Model X does not support parameter
-// reasoningEffort" or "invalid reasoning_effort"). Map pi-ai's wider Effort
-// enum into xAI's supported set so the picker can still show the full range
-// but the wire request stays valid. applyResponsesReasoningParams runs this
-// through `model.compat.reasoningEffortMap` at request time, downstream of
-// the omitReasoningEffort gate from xai-responses.ts.
-const XAI_REASONING_EFFORT_MAP = { minimal: "low", xhigh: "high" } as const;
+// Hermes-agent parity: only the `minimal -> low` clamp is applied (see
+// hermes-agent/agent/transports/codex.py:92 `_effort_clamp = {"minimal":
+// "low"}`). Hermes sends `xhigh` to xAI verbatim and we match that contract
+// — let xAI decide if the level is valid for the specific Grok model.
+// applyResponsesReasoningParams runs this through `model.compat.reasoningEffortMap`
+// at request time, downstream of the omitReasoningEffort gate in xai-responses.ts.
+const XAI_REASONING_EFFORT_MAP = { minimal: "low" } as const;
 
 function applyXAIOAuthCuration(dynamic: readonly Model<"openai-responses">[]): Model<"openai-responses">[] {
 	// (1) Filter tool-surface prefixes (picker pollution defense).
