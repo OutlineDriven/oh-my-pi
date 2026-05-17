@@ -250,7 +250,17 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			const providerSessionState = getOpenAIResponsesProviderSessionState(model, options?.providerSessionState);
 			const { params } = buildParams(model, context, options, providerSessionState, baseUrl);
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
+			// Merge provider-specific body fields (xai-responses.ts's prompt_cache_key
+			// etc.) BEFORE firing onPayload so the callback observes the wire body —
+			// its documented contract (types.ts: "inspecting or replacing provider
+			// payloads before sending") demands this view. Then re-merge AFTER the
+			// callback so extraBody stays authoritative on collision: a callback that
+			// mutates a non-extraBody field lands its edit, but cannot stomp keys the
+			// caller pinned. Object.assign is idempotent, so the double merge is
+			// equivalent to a single one when the callback didn't touch extraBody keys.
+			if (options?.extraBody) Object.assign(params, options.extraBody);
 			options?.onPayload?.(params);
+			if (options?.extraBody) Object.assign(params, options.extraBody);
 			rawRequestDump = {
 				provider: model.provider,
 				api: output.api,
@@ -259,13 +269,6 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 				url: `${baseUrl ?? "https://api.openai.com/v1"}/responses`,
 				body: params,
 			};
-			// Merge any provider-specific body fields injected by an adapter wrapper
-			// (e.g., providers/xai-responses.ts) before the request goes on the wire.
-			// Caller-supplied keys win on collision with anything assembled above —
-			// extraBody is the documented escape hatch for body knobs the generic
-			// pipeline doesn't model. Done once outside the retry loop; the merge is
-			// idempotent so retries see identical params.
-			if (options?.extraBody) Object.assign(params, options.extraBody);
 			const openaiStream = await callWithCopilotModelRetry(
 				async () => {
 					const { data, response, request_id } = await client.responses
