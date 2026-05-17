@@ -55196,8 +55196,7 @@
 			"baseUrl": "https://api.x.ai/v1",
 			"reasoning": true,
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 0,
@@ -55206,11 +55205,8 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 512000,
-			"maxTokens": 30000,
+			"maxTokens": 8888,
 			"compat": {
-				"reasoningEffortMap": {
-					"minimal": "low"
-				},
 				"supportsReasoningEffort": false
 			},
 			"thinking": {
