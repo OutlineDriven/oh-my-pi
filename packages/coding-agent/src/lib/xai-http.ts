@@ -21,7 +21,14 @@ export function ohMyPiXAIUserAgent(): string {
  * Priority:
  *   1. xai-oauth (SuperGrok subscription token via AuthStorage; refresh
  *      cascade runs inside ModelRegistry.getApiKeyForProvider).
- *   2. XAI_API_KEY environment variable (legacy/headless).
+ *   2. xai (plain API key) via the same registry path. Delegates to
+ *      ModelRegistry.getApiKeyForProvider which runs AuthStorage.getApiKey's
+ *      full cascade: runtime override → models.yml config override → stored
+ *      api_key credential → OAuth resolution → XAI_API_KEY env var → custom
+ *      fallback resolver. Replaces the prior direct $env.XAI_API_KEY read,
+ *      which skipped models.yml / AuthStorage-stored credentials and made
+ *      image/TTS tools silently unavailable to users whose chat path
+ *      authenticated through registry-managed creds.
  *
  * Returns null when neither credential is available. Caller is responsible
  * for surfacing an actionable error message in that case.
@@ -37,7 +44,7 @@ export async function resolveXAIHttpCredentials(modelRegistry: ModelRegistry): P
 		return { provider: "xai-oauth", apiKey: oauthKey, baseURL };
 	}
 
-	const apiKey = $env.XAI_API_KEY;
+	const apiKey = await modelRegistry.getApiKeyForProvider("xai");
 	if (apiKey) {
 		return { provider: "xai", apiKey, baseURL };
 	}
