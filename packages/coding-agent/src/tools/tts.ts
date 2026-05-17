@@ -54,7 +54,7 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 		ctx: CustomToolContext,
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<TtsToolDetails, typeof ttsSchema>> {
-		const creds = await resolveXAIHttpCredentials(ctx.modelRegistry);
+		const creds = await resolveXAIHttpCredentials(ctx.modelRegistry, ctx.model?.id);
 		if (!creds) {
 			return {
 				isError: true,
