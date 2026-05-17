@@ -2493,7 +2493,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"providers.image": {
 		type: "enum",
-		values: ["auto", "openai", "gemini", "openrouter"] as const,
+		values: ["auto", "openai", "gemini", "openrouter", "xai"] as const,
 		default: "auto",
 		ui: {
 			tab: "providers",
@@ -2508,6 +2508,11 @@ export const SETTINGS_SCHEMA = {
 				{ value: "openai", label: "OpenAI", description: "Uses the active GPT Responses/Codex model" },
 				{ value: "gemini", label: "Gemini", description: "Requires GEMINI_API_KEY" },
 				{ value: "openrouter", label: "OpenRouter", description: "Requires OPENROUTER_API_KEY" },
+				{
+					value: "xai",
+					label: "xAI Grok Imagine",
+					description: "Requires XAI_OAUTH_TOKEN (SuperGrok subscription) or XAI_API_KEY",
+				},
 			],
 		},
 	},
