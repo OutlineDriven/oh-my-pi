@@ -6,6 +6,7 @@ import * as z from "zod/v4";
 import type { ModelRegistry } from "../config/model-registry";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
+import { formatPathRelativeToCwd } from "./path-utils";
 
 // Hermes tts_tool.py L167-171
 const DEFAULT_XAI_VOICE_ID = "eve" as const;
@@ -127,7 +128,7 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 			content: [
 				{
 					type: "text",
-					text: `Saved ${bytes.length} bytes to ${resolvedPath} (voice=${voiceId}, codec=${codec}).`,
+					text: `Saved ${bytes.length} bytes to ${formatPathRelativeToCwd(resolvedPath, sessionCwd)} (voice=${voiceId}, codec=${codec}).`,
 				},
 			],
 			details: { bytes: bytes.length, voiceId, codec },
