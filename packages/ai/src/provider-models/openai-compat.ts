@@ -632,6 +632,13 @@ interface XAICuratedModel {
 	 * author convention until a follow-up Op: compress unifies them.
 	 */
 	supportsReasoningEffort?: boolean;
+	/**
+	 * Input modalities this model accepts. Defaults to `["text"]` when absent.
+	 * Vision-capable Grok models MUST list `"image"` here so the curated layer
+	 * overrides `fetchOpenAICompatibleModels`' default of `["text"]` (which
+	 * otherwise strips image capability on every online refresh).
+	 */
+	input?: ("text" | "image")[];
 }
 
 // Source of truth for the xai-oauth chat picker. Top of list = headline.
@@ -646,20 +653,24 @@ interface XAICuratedModel {
 // truth. omitReasoningEffort in xai-responses.ts:78 already prevents 400s; this
 // fixes the picker UX wart of advertising an inert dial.
 const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
+	// grok-build is text-only per the bundled catalog; omit `input` for the default.
 	{ id: "grok-build", contextWindow: 512_000, name: "Grok Build", supportsReasoningEffort: false },
-	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3" },
+	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3", input: ["text", "image"] },
+	// grok-4.20-multi-agent-0309 is text-only per the bundled catalog; omit `input` for the default.
 	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000, name: "Grok 4.20 (Multi-Agent)" },
 	{
 		id: "grok-4.20-0309-reasoning",
 		contextWindow: 2_000_000,
 		name: "Grok 4.20 (Reasoning)",
 		supportsReasoningEffort: false,
+		input: ["text", "image"],
 	},
 	{
 		id: "grok-4.20-0309-non-reasoning",
 		contextWindow: 2_000_000,
 		name: "Grok 4.20 (Non-Reasoning)",
 		reasoning: false,
+		input: ["text", "image"],
 	},
 ] as const;
 
@@ -691,6 +702,7 @@ function mergeCuratedIntoModel(base: Model<"openai-responses">, curated: XAICura
 		contextWindow: curated.contextWindow,
 		name: curated.name ?? base.name,
 		reasoning: curated.reasoning ?? true,
+		input: curated.input ?? base.input,
 		...(compat !== undefined ? { compat } : {}),
 	};
 }

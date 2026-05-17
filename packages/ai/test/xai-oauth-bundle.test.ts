@@ -32,6 +32,10 @@ describe("xai-oauth bundled catalog (regression)", () => {
 			expect(bundledEntry.api).toBe("openai-responses");
 			expect(bundledEntry.contextWindow).toBe(seededModel.contextWindow);
 			expect(bundledEntry.reasoning).toBe(seededModel.reasoning);
+			// Input modality must survive both the curated seed and the bundle.
+			// Without this the static fallback used on offline boot strips
+			// vision capability silently (Codex PR #1127 review).
+			expect(bundledEntry.input).toEqual(seededModel.input);
 		});
 	}
 });
