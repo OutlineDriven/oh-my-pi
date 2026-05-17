@@ -26,8 +26,14 @@ type XAIProvider = "xai-oauth" | "xai";
  *      override — i.e. `merged.baseUrl` differs from the seeded/bundled
  *      default for the (provider, id) pair. Mirrors the chat path's per-model
  *      contract (`openai-responses.ts: model.baseUrl`).
- *   2. `XAI_BASE_URL` env var (legacy global override, preserved).
- *   3. `DEFAULT_BASE_URL = "https://api.x.ai/v1"`.
+ *   2. `ModelRegistry.getProviderBaseUrl(provider)` — provider-level override
+ *      (e.g. `providers.xai-oauth.baseUrl` from models.yml). Reached when the
+ *      modelId does not appear in the registry under this provider, which
+ *      happens for tool-only ids like `grok-imagine-image` that `applyXAIOAuthCuration`
+ *      filters out via `XAI_NON_CHAT_PREFIXES`. Without this leg, a registry-
+ *      configured proxy is silently bypassed for image/TTS traffic.
+ *   3. `XAI_BASE_URL` env var (legacy global override, preserved).
+ *   4. `DEFAULT_BASE_URL = "https://api.x.ai/v1"`.
  *
  * The override gate at step 1 uses `bundled?.baseUrl ?? DEFAULT_BASE_URL` as
  * the canonical default sentinel. For xai (which has bundled entries) this
@@ -52,6 +58,10 @@ function resolveXAIBaseURL(modelRegistry: ModelRegistry, provider: XAIProvider, 
 				return merged.baseUrl.replace(/\/$/, "");
 			}
 		}
+	}
+	const providerBaseUrl = modelRegistry.getProviderBaseUrl(provider);
+	if (providerBaseUrl) {
+		return providerBaseUrl.replace(/\/$/, "");
 	}
 	return ($env.XAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, "");
 }
