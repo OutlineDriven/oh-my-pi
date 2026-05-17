@@ -11,13 +11,15 @@ import {
 } from "./openai-responses";
 
 // xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3 /
-// grok-code-fast / grok-4.20-0309-* with HTTP 400 even though those models
-// reason natively (hermes-agent/agent/transports/codex.py:127-133). Only send
-// the effort dial when the target model is on this allowlist; otherwise
-// suppress it via OpenAIResponsesOptions.omitReasoningEffort and let the model
-// reason on its own. grok-build is included per user spec (2026-05-17): xAI's
-// coding-fine-tuned chat model accepts the dial similarly to grok-4.3.
-const GROK_EFFORT_CAPABLE_PREFIXES = ["grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-build"] as const;
+// grok-code-fast / grok-4.20-0309-* / grok-build with HTTP 400 ("Model X does
+// not support parameter reasoningEffort") even though those models reason
+// natively (hermes-agent/agent/transports/codex.py:127-133). Only send the
+// effort dial when the target model is on this allowlist; otherwise suppress
+// it via OpenAIResponsesOptions.omitReasoningEffort and let the model reason
+// on its own. grok-build was previously on this list per user spec; the live
+// xAI server contradicts that assumption (HTTP 400 confirmed against
+// api.x.ai/v1/responses on 2026-05-17).
+const GROK_EFFORT_CAPABLE_PREFIXES = ["grok-3-mini", "grok-4.20-multi-agent", "grok-4.3"] as const;
 
 function grokSupportsReasoningEffort(modelId: string): boolean {
 	const name = (modelId || "").trim().toLowerCase();
