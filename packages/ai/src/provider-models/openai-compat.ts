@@ -621,6 +621,8 @@ interface XAICuratedModel {
 	id: string;
 	contextWindow: number;
 	name?: string;
+	/** Whether the model reasons natively. Defaults to true for Grok-4.x family. */
+	reasoning?: boolean;
 }
 
 // Source of truth for the xai-oauth chat picker. Top of list = headline.
@@ -632,7 +634,7 @@ const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3" },
 	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000 },
 	{ id: "grok-4.20-0309-reasoning", contextWindow: 2_000_000 },
-	{ id: "grok-4.20-0309-non-reasoning", contextWindow: 2_000_000 },
+	{ id: "grok-4.20-0309-non-reasoning", contextWindow: 2_000_000, reasoning: false },
 ] as const;
 
 // xAI /v1/models returns chat, image, voice, and STT entries. Tool surfaces
@@ -692,15 +694,47 @@ function applyXAIOAuthCuration(dynamic: readonly Model<"openai-responses">[]): M
 export function xaiOAuthModelManagerOptions(
 	config?: XaiOAuthModelManagerConfig,
 ): ModelManagerOptions<"openai-responses"> {
+	const defaultBaseUrl = "https://api.x.ai/v1";
+	const resolvedBaseUrl = config?.baseUrl ?? defaultBaseUrl;
 	const base = createSimpleOpenAIResponsesOptions(
 		"xai-oauth" as Parameters<typeof getBundledModels>[0],
-		"https://api.x.ai/v1",
+		defaultBaseUrl,
 		config,
 	);
-	if (!base.fetchDynamicModels) return base;
+	// Static seed: the curated catalog rendered as full Model<"openai-responses">
+	// entries. Without this, the XAI-OAUTH tab is invisible on a fresh login —
+	// fetchDynamicModels is gated on `config.apiKey` at construction time (the
+	// OAuth token is resolved later via AuthStorage), models.json has zero
+	// xai-oauth entries, and the model-selector opens the picker with
+	// refresh("offline") so the dynamic fetch never fires anyway. The static
+	// seed makes the picker show the curated chat models from the first picker
+	// open after a successful `/login xai-oauth`. Mirrors
+	// hermes-agent/hermes_cli/models.py:_XAI_STATIC_FALLBACK.
+	//
+	// reasoning defaults to true for the Grok-4.x family; the explicit
+	// `grok-4.20-0309-non-reasoning` entry opts out via XAICuratedModel.reasoning.
+	// maxTokens uses UNK_MAX_TOKENS to match the shape fetchOpenAICompatibleModels
+	// emits for entries without a bundled reference, so id-keyed overlays from a
+	// successful dynamic fetch merge cleanly.
+	const staticModels: Model<"openai-responses">[] = XAI_OAUTH_CURATED_MODELS.map(curated => ({
+		id: curated.id,
+		name: curated.name ?? curated.id,
+		api: "openai-responses",
+		provider: "xai-oauth",
+		baseUrl: resolvedBaseUrl,
+		reasoning: curated.reasoning ?? true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: curated.contextWindow,
+		maxTokens: UNK_MAX_TOKENS,
+	}));
+	if (!base.fetchDynamicModels) {
+		return { ...base, staticModels };
+	}
 	const inner = base.fetchDynamicModels;
 	return {
 		...base,
+		staticModels,
 		fetchDynamicModels: async () => {
 			const dynamic = await inner();
 			return dynamic == null ? dynamic : applyXAIOAuthCuration(dynamic);
