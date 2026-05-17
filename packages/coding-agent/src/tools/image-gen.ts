@@ -49,7 +49,9 @@ interface ImageApiKey {
 }
 
 const responseModalitySchema = z.enum(["IMAGE", "TEXT"] as const);
-const aspectRatioSchema = z.enum(["1:1", "3:4", "4:3", "9:16", "16:9"] as const).describe("aspect ratio");
+const aspectRatioSchema = z
+	.enum(["1:1", "3:4", "4:3", "9:16", "16:9", "3:2", "2:3"] as const)
+	.describe("aspect ratio (3:2/2:3 are xAI-only; substituted to 4:3/3:4 on Gemini/Antigravity)");
 const imageSizeSchema = z.enum(["1024x1024", "1536x1024", "1024x1536"] as const).describe("image size");
 
 const inputImageSchema = z
@@ -626,13 +628,36 @@ function resolveOpenAIImageSize(aspectRatio: string | undefined, imageSize: stri
 			return "1024x1024";
 		case "3:4":
 		case "9:16":
+		case "2:3":
 			return "1024x1536";
 		case "4:3":
 		case "16:9":
+		case "3:2":
 			return "1536x1024";
 		default:
 			return undefined;
 	}
+}
+
+// Gemini Imagen and Google Antigravity (Imagen-family) reject the xAI-only
+// aspect ratios 3:2 and 2:3 with HTTP 400. The schema advertises the full
+// seven-ratio set (xAI surface), so we silently substitute on Imagen routes
+// and surface the substitution to the model via a text note. The user-facing
+// response still includes the substitution note so the model knows what
+// landed.
+const IMAGEN_ASPECT_FALLBACK: Record<string, string> = { "3:2": "4:3", "2:3": "3:4" };
+
+function resolveImagenAspectRatio(requested: string | undefined): {
+	effective: string | undefined;
+	note: string | undefined;
+} {
+	if (!requested) return { effective: undefined, note: undefined };
+	const mapped = IMAGEN_ASPECT_FALLBACK[requested];
+	if (!mapped) return { effective: requested, note: undefined };
+	return {
+		effective: mapped,
+		note: `Note: aspect_ratio ${requested} is not supported by Imagen-family providers; substituted ${mapped}.`,
+	};
 }
 
 function buildOpenAIHostedImageRequest(
@@ -1012,11 +1037,14 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 				}
 
 				const prompt = assemblePrompt(params);
+				const { effective: antigravityAspect, note: antigravityAspectNote } = resolveImagenAspectRatio(
+					params.aspect_ratio,
+				);
 				const requestBody = buildAntigravityRequest(
 					prompt,
 					model,
 					apiKey.projectId,
-					params.aspect_ratio,
+					antigravityAspect,
 					params.image_size,
 					resolvedImages,
 				);
@@ -1065,9 +1093,11 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 				}
 
 				const imagePaths = await saveImagesToTemp(parsed.images);
+				const summary = buildResponseSummary(provider, model, imagePaths, responseText);
+				const text = antigravityAspectNote ? `${antigravityAspectNote}\n\n${summary}` : summary;
 
 				return {
-					content: [{ type: "text", text: buildResponseSummary(provider, model, imagePaths, responseText) }],
+					content: [{ type: "text", text }],
 					details: {
 						provider,
 						model,
@@ -1258,9 +1288,10 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 				responseModalities: ["IMAGE"],
 			};
 
-			if (params.aspect_ratio || params.image_size) {
+			const { effective: geminiAspect, note: geminiAspectNote } = resolveImagenAspectRatio(params.aspect_ratio);
+			if (geminiAspect || params.image_size) {
 				generationConfig.imageConfig = {
-					aspectRatio: params.aspect_ratio,
+					aspectRatio: geminiAspect,
 					imageSize: params.image_size,
 				};
 			}
@@ -1320,9 +1351,11 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 			}
 
 			const imagePaths = await saveImagesToTemp(inlineImages);
+			const geminiSummary = buildResponseSummary(provider, model, imagePaths, responseText);
+			const geminiText = geminiAspectNote ? `${geminiAspectNote}\n\n${geminiSummary}` : geminiSummary;
 
 			return {
-				content: [{ type: "text", text: buildResponseSummary(provider, model, imagePaths, responseText) }],
+				content: [{ type: "text", text: geminiText }],
 				details: {
 					provider,
 					model,
