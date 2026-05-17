@@ -1,5 +1,6 @@
 // Ported from NousResearch/hermes-agent (MIT) — tools/tts_tool.py L167-171, L896-959.
 
+import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import * as z from "zod/v4";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
@@ -114,12 +115,19 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 			};
 		}
 		const bytes = new Uint8Array(await response.arrayBuffer());
-		await Bun.write(params.output_path, bytes);
+		// Resolve relative output_path against the session's current working directory,
+		// not the process launch directory. Mirrors the input-path convention in
+		// image-gen.ts:948 (`const cwd = ctx.sessionManager.getCwd()`).
+		const sessionCwd = ctx.sessionManager.getCwd();
+		const resolvedPath = path.isAbsolute(params.output_path)
+			? params.output_path
+			: path.resolve(sessionCwd, params.output_path);
+		await Bun.write(resolvedPath, bytes);
 		return {
 			content: [
 				{
 					type: "text",
-					text: `Saved ${bytes.length} bytes to ${params.output_path} (voice=${voiceId}, codec=${codec}).`,
+					text: `Saved ${bytes.length} bytes to ${resolvedPath} (voice=${voiceId}, codec=${codec}).`,
 				},
 			],
 			details: { bytes: bytes.length, voiceId, codec },
