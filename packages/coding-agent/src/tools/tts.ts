@@ -82,9 +82,8 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 		const sampleRateOverridden = sampleRate !== DEFAULT_XAI_SAMPLE_RATE;
 		const bitRateOverridden = codec === "mp3" && bitRate !== DEFAULT_XAI_BIT_RATE;
 		if (codecOverridden || sampleRateOverridden || bitRateOverridden) {
-			const fmt: Record<string, unknown> = { codec };
-			if (sampleRate) fmt.sample_rate = sampleRate;
-			if (codec === "mp3" && bitRate) fmt.bit_rate = bitRate;
+			const fmt: Record<string, unknown> = { codec, sample_rate: sampleRate };
+			if (codec === "mp3") fmt.bit_rate = bitRate;
 			payload.output_format = fmt;
 		}
 
