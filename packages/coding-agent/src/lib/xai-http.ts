@@ -23,16 +23,20 @@ type XAIProvider = "xai-oauth" | "xai";
  *
  * Precedence:
  *   1. `model.baseUrl` from the registry IF the user pinned a per-model
- *      override (the merged baseUrl differs from the bundled default for the
- *      (provider, id) pair, OR the pair exists only as a user-defined model).
- *      Mirrors the chat path's per-model contract (`openai-responses.ts:
- *      model.baseUrl`).
+ *      override — i.e. `merged.baseUrl` differs from the seeded/bundled
+ *      default for the (provider, id) pair. Mirrors the chat path's per-model
+ *      contract (`openai-responses.ts: model.baseUrl`).
  *   2. `XAI_BASE_URL` env var (legacy global override, preserved).
  *   3. `DEFAULT_BASE_URL = "https://api.x.ai/v1"`.
  *
- * The override gate at step 1 prevents bundled defaults (which equal
- * `DEFAULT_BASE_URL`) from short-circuiting the env leg — users on env-only
- * configuration see no behavior change. Lookup is scoped to (provider, id);
+ * The override gate at step 1 uses `bundled?.baseUrl ?? DEFAULT_BASE_URL` as
+ * the canonical default sentinel. For xai (which has bundled entries) this
+ * compares against the bundled value; for xai-oauth (no bundled entries —
+ * models.json carries no xai-oauth records, the picker is seeded statically
+ * from `xaiOAuthModelManagerOptions` with `baseUrl: DEFAULT_BASE_URL`) the
+ * sentinel falls back to DEFAULT_BASE_URL so the env leg remains reachable.
+ * Without that fallback, every xai-oauth model id forces `!bundled === true`
+ * and short-circuits XAI_BASE_URL silently. Lookup is scoped to (provider, id);
  * matching by id alone would let xai-oauth entries hijack a xai tool call (or
  * vice versa) when the same model id ships under both descriptors.
  */
@@ -43,7 +47,8 @@ function resolveXAIBaseURL(modelRegistry: ModelRegistry, provider: XAIProvider, 
 			const bundled = getBundledModels(provider as Parameters<typeof getBundledModels>[0]).find(
 				m => m.id === modelId,
 			);
-			if (!bundled || merged.baseUrl !== bundled.baseUrl) {
+			const providerDefault = bundled?.baseUrl ?? DEFAULT_BASE_URL;
+			if (merged.baseUrl !== providerDefault) {
 				return merged.baseUrl.replace(/\/$/, "");
 			}
 		}
