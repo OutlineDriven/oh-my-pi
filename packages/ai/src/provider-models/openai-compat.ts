@@ -617,14 +617,95 @@ export interface XaiOAuthModelManagerConfig {
 	baseUrl?: string;
 }
 
+interface XAICuratedModel {
+	id: string;
+	contextWindow: number;
+	name?: string;
+}
+
+// Source of truth for the xai-oauth chat picker. Top of list = headline.
+// Context windows from hermes-agent/agent/model_metadata.py:205-220
+// ("Values sourced from models.dev (2026-04)"). grok-build is xAI's
+// coding-fine-tuned chat model; 512K context per user spec (2026-05-17).
+const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
+	{ id: "grok-build", contextWindow: 512_000, name: "Grok Build" },
+	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3" },
+	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000 },
+	{ id: "grok-4.20-0309-reasoning", contextWindow: 2_000_000 },
+	{ id: "grok-4.20-0309-non-reasoning", contextWindow: 2_000_000 },
+] as const;
+
+// xAI /v1/models returns chat, image, voice, and STT entries. Tool surfaces
+// route through dedicated tools (generate_image, tts) with their own model
+// strings; the chat picker MUST exclude these prefixes or selecting them 400s.
+const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
+
+function applyXAIOAuthCuration(dynamic: readonly Model<"openai-responses">[]): Model<"openai-responses">[] {
+	// (1) Filter tool-surface prefixes (picker pollution defense).
+	const filtered = dynamic.filter(e => !XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)));
+
+	// (2) Overlay curated metadata onto dynamic-fetch matches. xAI's /v1/models
+	// does not return context_window metadata, so without this overlay the
+	// runtime falls back to the bundled-reference default (effectively 128k).
+	const byId = new Map<string, Model<"openai-responses">>(filtered.map(e => [e.id, e]));
+	for (const curated of XAI_OAUTH_CURATED_MODELS) {
+		const existing = byId.get(curated.id);
+		if (existing) {
+			byId.set(curated.id, {
+				...existing,
+				contextWindow: curated.contextWindow,
+				name: curated.name ?? existing.name,
+			});
+		}
+	}
+
+	// (3) Inject curated entries missing from dynamic fetch. Clones the first
+	// surviving entry as a template so required Model fields (api, provider,
+	// baseUrl, cost, etc.) inherit sane defaults. Today xAI's /v1/models does
+	// not yet list `grok-build`; this keeps the picker accurate until xAI
+	// catches up. If `filtered` is empty (offline / no auth) injection is
+	// skipped — the descriptor's defaultModel covers the fallback.
+	const template = filtered[0];
+	if (template) {
+		for (const curated of XAI_OAUTH_CURATED_MODELS) {
+			if (!byId.has(curated.id)) {
+				byId.set(curated.id, {
+					...template,
+					id: curated.id,
+					name: curated.name ?? curated.id,
+					contextWindow: curated.contextWindow,
+				});
+			}
+		}
+	}
+
+	// (4) Order: curated models first in declaration order; then dynamic
+	// remainder in original order.
+	const curatedIds = new Set(XAI_OAUTH_CURATED_MODELS.map(c => c.id));
+	const curatedFirst = XAI_OAUTH_CURATED_MODELS.map(c => byId.get(c.id)).filter(
+		(e): e is Model<"openai-responses"> => e !== undefined,
+	);
+	const rest = filtered.filter(e => !curatedIds.has(e.id));
+	return [...curatedFirst, ...rest];
+}
+
 export function xaiOAuthModelManagerOptions(
 	config?: XaiOAuthModelManagerConfig,
 ): ModelManagerOptions<"openai-responses"> {
-	return createSimpleOpenAIResponsesOptions(
+	const base = createSimpleOpenAIResponsesOptions(
 		"xai-oauth" as Parameters<typeof getBundledModels>[0],
 		"https://api.x.ai/v1",
 		config,
 	);
+	if (!base.fetchDynamicModels) return base;
+	const inner = base.fetchDynamicModels;
+	return {
+		...base,
+		fetchDynamicModels: async () => {
+			const dynamic = await inner();
+			return dynamic == null ? dynamic : applyXAIOAuthCuration(dynamic);
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
