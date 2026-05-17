@@ -648,9 +648,19 @@ interface XAICuratedModel {
 const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 	{ id: "grok-build", contextWindow: 512_000, name: "Grok Build", supportsReasoningEffort: false },
 	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3" },
-	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000 },
-	{ id: "grok-4.20-0309-reasoning", contextWindow: 2_000_000, supportsReasoningEffort: false },
-	{ id: "grok-4.20-0309-non-reasoning", contextWindow: 2_000_000, reasoning: false },
+	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000, name: "Grok 4.20 (Multi-Agent)" },
+	{
+		id: "grok-4.20-0309-reasoning",
+		contextWindow: 2_000_000,
+		name: "Grok 4.20 (Reasoning)",
+		supportsReasoningEffort: false,
+	},
+	{
+		id: "grok-4.20-0309-non-reasoning",
+		contextWindow: 2_000_000,
+		name: "Grok 4.20 (Non-Reasoning)",
+		reasoning: false,
+	},
 ] as const;
 
 // xAI /v1/models returns chat, image, voice, and STT entries. Tool surfaces
@@ -731,37 +741,30 @@ function applyXAIOAuthCuration(dynamic: readonly Model<"openai-responses">[]): M
 	return [...curatedFirst, ...rest];
 }
 
-export function xaiOAuthModelManagerOptions(
-	config?: XaiOAuthModelManagerConfig,
-): ModelManagerOptions<"openai-responses"> {
-	const defaultBaseUrl = "https://api.x.ai/v1";
-	const resolvedBaseUrl = config?.baseUrl ?? defaultBaseUrl;
-	const base = createSimpleOpenAIResponsesOptions(
-		"xai-oauth" as Parameters<typeof getBundledModels>[0],
-		defaultBaseUrl,
-		config,
-	);
-	// Static seed: the curated catalog rendered as full Model<"openai-responses">
-	// entries. Without this, the XAI-OAUTH tab is invisible on a fresh login —
-	// fetchDynamicModels is gated on `config.apiKey` at construction time (the
-	// OAuth token is resolved later via AuthStorage), models.json has zero
-	// xai-oauth entries, and the model-selector opens the picker with
-	// refresh("offline") so the dynamic fetch never fires anyway. The static
-	// seed makes the picker show the curated chat models from the first picker
-	// open after a successful `/login xai-oauth`. Mirrors
-	// hermes-agent/hermes_cli/models.py:_XAI_STATIC_FALLBACK.
-	//
-	// reasoning defaults to true for the Grok-4.x family; the explicit
-	// `grok-4.20-0309-non-reasoning` entry opts out via XAICuratedModel.reasoning.
-	// maxTokens uses UNK_MAX_TOKENS to match the shape fetchOpenAICompatibleModels
-	// emits for entries without a bundled reference, so id-keyed overlays from a
-	// successful dynamic fetch merge cleanly.
-	const staticModels: Model<"openai-responses">[] = XAI_OAUTH_CURATED_MODELS.map(curated => {
+/**
+ * Render `XAI_OAUTH_CURATED_MODELS` as full `Model<"openai-responses">` entries.
+ *
+ * Single source of truth for the curated to Model fan-in, consumed by both
+ * - {@link xaiOAuthModelManagerOptions} (runtime static seed handed to the model
+ *   manager so the picker is populated on a fresh login), and
+ * - `packages/ai/scripts/generate-models.ts` (bundles the same entries into
+ *   `models.json`, so the synchronous `ModelRegistry.#loadModels()` boot path
+ *   sees `xai-oauth` without waiting for a refresh — fixes the boot-time
+ *   default-model reset when `modelRoles.default = "xai-oauth/<id>"`).
+ *
+ * `reasoning` defaults to `true` for the Grok-4.x family; the explicit
+ * `grok-4.20-0309-non-reasoning` entry opts out via `XAICuratedModel.reasoning`.
+ * `maxTokens` uses `UNK_MAX_TOKENS` so id-keyed overlays from a successful
+ * dynamic fetch merge cleanly. Mirrors
+ * `hermes-agent/hermes_cli/models.py:_XAI_STATIC_FALLBACK`.
+ */
+export function buildXaiOAuthStaticSeed(baseUrl?: string): Model<"openai-responses">[] {
+	const resolvedBaseUrl = baseUrl ?? "https://api.x.ai/v1";
+	return XAI_OAUTH_CURATED_MODELS.map(curated => {
 		// Synthesise a bare base then layer curated metadata via the same helper
-		// the dynamic overlay/inject paths use. Locks the curated → Model
-		// invariant in one place; future XAICuratedModel fields fan out
-		// automatically. `name: curated.id` is a sentinel — the helper rewrites
-		// it to `curated.name ?? base.name`, so curated.name wins when set.
+		// the dynamic overlay/inject paths use. `name: curated.id` is a sentinel
+		// the helper rewrites to `curated.name ?? base.name`, so curated.name
+		// wins when set.
 		const base: Model<"openai-responses"> = {
 			id: curated.id,
 			name: curated.id,
@@ -777,6 +780,25 @@ export function xaiOAuthModelManagerOptions(
 		};
 		return mergeCuratedIntoModel(base, curated);
 	});
+}
+
+export function xaiOAuthModelManagerOptions(
+	config?: XaiOAuthModelManagerConfig,
+): ModelManagerOptions<"openai-responses"> {
+	const defaultBaseUrl = "https://api.x.ai/v1";
+	const resolvedBaseUrl = config?.baseUrl ?? defaultBaseUrl;
+	const base = createSimpleOpenAIResponsesOptions(
+		"xai-oauth" as Parameters<typeof getBundledModels>[0],
+		defaultBaseUrl,
+		config,
+	);
+	// Static seed handed to the runtime model manager so the picker populates on
+	// a fresh login even before `fetchDynamicModels` fires (it is gated on
+	// `config.apiKey` at construction time, and OAuth tokens resolve later via
+	// AuthStorage). `generate-models.ts` calls the same builder so `models.json`
+	// carries these entries too — making the synchronous `#loadModels()` boot
+	// path honor `modelRoles.default = "xai-oauth/<id>"` without `await refresh()`.
+	const staticModels = buildXaiOAuthStaticSeed(resolvedBaseUrl);
 	if (!base.fetchDynamicModels) {
 		return { ...base, staticModels };
 	}
