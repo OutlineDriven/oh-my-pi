@@ -70,13 +70,24 @@ function resolveXAIBaseURL(modelRegistry: ModelRegistry, provider: XAIProvider, 
  * Resolve xAI credentials for HTTP tool calls.
  *
  * Credential priority:
- *   1. xai-oauth (SuperGrok subscription token via AuthStorage; refresh
- *      cascade runs inside ModelRegistry.getApiKeyForProvider).
- *   2. xai (plain API key) via the same registry path. Delegates to
- *      ModelRegistry.getApiKeyForProvider which runs AuthStorage.getApiKey's
- *      full cascade: runtime override → models.yml config override → stored
- *      api_key credential → OAuth resolution → XAI_API_KEY env var → custom
- *      fallback resolver.
+ *   1. xai-oauth — only when a *dedicated* xai-oauth source exists. Composed
+ *      of two checks against the registry layer:
+ *        a. `authStorage.hasNonEnvCredential("xai-oauth")` covers stored
+ *           credentials (OAuth or api_key), runtime overrides (CLI
+ *           `--api-key` for xai-oauth), config overrides (models.yml
+ *           `providers.xai-oauth.apiKey`), and fallback resolvers.
+ *        b. `$env.XAI_OAUTH_TOKEN` covers the xai-oauth-specific env var.
+ *      `XAI_API_KEY` is intentionally NOT a signal here, even though the
+ *      env-fallback map (`stream.ts:87`) lets xai-oauth borrow it as a
+ *      back-compat convenience: the borrow lets API-key-only setups
+ *      satisfy the xai-oauth branch and then resolve baseUrl under
+ *      xai-oauth instead of xai, silently bypassing `providers.xai.baseUrl`
+ *      overrides for image/TTS traffic. The gate routes the borrow case to
+ *      step 2 while preserving every dedicated xai-oauth path.
+ *   2. xai (plain API key). Delegates to ModelRegistry.getApiKeyForProvider
+ *      which runs AuthStorage.getApiKey's full cascade: runtime override →
+ *      models.yml config override → stored api_key credential → OAuth
+ *      resolution → XAI_API_KEY env var → custom fallback resolver.
  *
  * baseURL: see `resolveXAIBaseURL` above. Resolved AFTER the credential
  * decision so the scoped (provider, id) lookup is unambiguous. `modelId`
@@ -90,10 +101,14 @@ export async function resolveXAIHttpCredentials(
 	modelRegistry: ModelRegistry,
 	modelId?: string,
 ): Promise<XAICredentials | null> {
-	const oauthKey = await modelRegistry.getApiKeyForProvider("xai-oauth");
-	if (oauthKey) {
-		const baseURL = resolveXAIBaseURL(modelRegistry, "xai-oauth", modelId);
-		return { provider: "xai-oauth", apiKey: oauthKey, baseURL };
+	const hasDedicatedXaiOAuth =
+		modelRegistry.authStorage.hasNonEnvCredential("xai-oauth") || Boolean($env.XAI_OAUTH_TOKEN);
+	if (hasDedicatedXaiOAuth) {
+		const oauthKey = await modelRegistry.getApiKeyForProvider("xai-oauth");
+		if (oauthKey) {
+			const baseURL = resolveXAIBaseURL(modelRegistry, "xai-oauth", modelId);
+			return { provider: "xai-oauth", apiKey: oauthKey, baseURL };
+		}
 	}
 
 	const apiKey = await modelRegistry.getApiKeyForProvider("xai");
