@@ -110,6 +110,14 @@ export interface OpenAIResponsesOptions extends StreamOptions {
 	 */
 	filterReasoningHistory?: boolean;
 	/**
+	 * Suppress the `reasoning.effort` request field while keeping the rest of
+	 * the reasoning pipeline intact. Default: false (preserves current
+	 * behavior). xAI Grok models outside the effort-capable allowlist 400 on
+	 * `reasoning.effort` even though they reason natively; the xAI adapter
+	 * sets this flag for those models.
+	 */
+	omitReasoningEffort?: boolean;
+	/**
 	 * Extra request headers merged onto the underlying client's
 	 * defaultHeaders. Used by adapter wrappers to inject provider-specific
 	 * routing or cache hints.
@@ -468,6 +476,7 @@ function buildParams(
 				model.compat?.reasoningEffortMap,
 			),
 		options?.includeEncryptedReasoning ?? true,
+		options?.omitReasoningEffort ?? false,
 	);
 
 	return { conversationMessages, params };
