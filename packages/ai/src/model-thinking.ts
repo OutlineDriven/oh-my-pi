@@ -211,6 +211,20 @@ export function getSupportedEfforts<TApi extends Api>(model: ApiModel<TApi>): re
 	if (!model.reasoning) {
 		return [];
 	}
+	// Models that reason natively but reject the `reasoning.effort` wire param
+	// (xAI Grok off the GROK_EFFORT_CAPABLE_PREFIXES allowlist in
+	// providers/xai-responses.ts: grok-build, grok-4.20-0309-reasoning) hide the
+	// picker's effort dial. Scoped to openai-responses* because openai-completions
+	// has its own supportsReasoningEffort consultation at inferFallbackEfforts L536
+	// and changing that path's semantics is out-of-scope. The `in`-narrowed
+	// access is necessary because Model.compat is `AnthropicCompat | OpenAICompat`
+	// and the api gate doesn't narrow the union for TS.
+	if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
+		const compat = model.compat;
+		if (compat && "supportsReasoningEffort" in compat && compat.supportsReasoningEffort === false) {
+			return [];
+		}
+	}
 	if (!model.thinking) {
 		throw new Error(`Model ${model.provider}/${model.id} is missing thinking metadata`);
 	}

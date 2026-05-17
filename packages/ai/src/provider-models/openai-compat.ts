@@ -623,17 +623,33 @@ interface XAICuratedModel {
 	name?: string;
 	/** Whether the model reasons natively. Defaults to true for Grok-4.x family. */
 	reasoning?: boolean;
+	/**
+	 * Whether xAI accepts the `reasoning.effort` wire param for this model.
+	 * Default true. When false: picker hides the effort dial (via
+	 * getSupportedEfforts in model-thinking.ts) AND wire-side already omits
+	 * the param via GROK_EFFORT_CAPABLE_PREFIXES in providers/xai-responses.ts.
+	 * Must agree with that allowlist; two truths kept in sync by curated-catalog
+	 * author convention until a follow-up Op: compress unifies them.
+	 */
+	supportsReasoningEffort?: boolean;
 }
 
 // Source of truth for the xai-oauth chat picker. Top of list = headline.
 // Context windows from hermes-agent/agent/model_metadata.py:205-220
 // ("Values sourced from models.dev (2026-04)"). grok-build is xAI's
 // coding-fine-tuned chat model; 512K context per user spec (2026-05-17).
+//
+// supportsReasoningEffort=false entries reason natively but reject the wire
+// `reasoning.effort` param (api.x.ai returns HTTP 400). Mirrors the HTTP-side
+// GROK_EFFORT_CAPABLE_PREFIXES allowlist in providers/xai-responses.ts. The
+// curated flag is the picker-visible truth; the HTTP allowlist is the wire
+// truth. omitReasoningEffort in xai-responses.ts:78 already prevents 400s; this
+// fixes the picker UX wart of advertising an inert dial.
 const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
-	{ id: "grok-build", contextWindow: 512_000, name: "Grok Build" },
+	{ id: "grok-build", contextWindow: 512_000, name: "Grok Build", supportsReasoningEffort: false },
 	{ id: "grok-4.3", contextWindow: 1_000_000, name: "Grok 4.3" },
 	{ id: "grok-4.20-multi-agent-0309", contextWindow: 2_000_000 },
-	{ id: "grok-4.20-0309-reasoning", contextWindow: 2_000_000 },
+	{ id: "grok-4.20-0309-reasoning", contextWindow: 2_000_000, supportsReasoningEffort: false },
 	{ id: "grok-4.20-0309-non-reasoning", contextWindow: 2_000_000, reasoning: false },
 ] as const;
 
@@ -735,7 +751,12 @@ export function xaiOAuthModelManagerOptions(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: curated.contextWindow,
 		maxTokens: UNK_MAX_TOKENS,
-		compat: { reasoningEffortMap: XAI_REASONING_EFFORT_MAP },
+		compat: {
+			reasoningEffortMap: XAI_REASONING_EFFORT_MAP,
+			...(curated.supportsReasoningEffort !== undefined
+				? { supportsReasoningEffort: curated.supportsReasoningEffort }
+				: {}),
+		},
 	}));
 	if (!base.fetchDynamicModels) {
 		return { ...base, staticModels };
