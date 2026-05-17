@@ -250,6 +250,13 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 				url: `${baseUrl ?? "https://api.openai.com/v1"}/responses`,
 				body: params,
 			};
+			// Merge any provider-specific body fields injected by an adapter wrapper
+			// (e.g., providers/xai-responses.ts) before the request goes on the wire.
+			// Caller-supplied keys win on collision with anything assembled above —
+			// extraBody is the documented escape hatch for body knobs the generic
+			// pipeline doesn't model. Done once outside the retry loop; the merge is
+			// idempotent so retries see identical params.
+			if (options?.extraBody) Object.assign(params, options.extraBody);
 			const openaiStream = await callWithCopilotModelRetry(
 				async () => {
 					const { data, response, request_id } = await client.responses
