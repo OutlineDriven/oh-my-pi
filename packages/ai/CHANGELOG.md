@@ -10,6 +10,8 @@
 
 - `OpenAIResponsesOptions` gains four optional, provider-agnostic fields that adapter wrappers can use to compose provider-specific behavior on top of the generic transport: `includeEncryptedReasoning` (gates `include: ["reasoning.encrypted_content"]`; default `true`, preserves current behavior), `filterReasoningHistory` (strips replayed `type: "reasoning"` items from conversation history; default `false`), `headers` (merged onto the client's default headers), and `extraBody` (merged into the request payload).
 - The existing `XAI_API_KEY` path is unchanged — it continues to use the OpenAI-completions transport.
+
+## [15.1.3] - 2026-05-17
 ### Breaking Changes
 
 - Changed `AuthBrokerClient.fetchSnapshot()` to return status-based results (`200` or `304`) instead of always returning a raw snapshot body, so callers now need to branch on `status`
