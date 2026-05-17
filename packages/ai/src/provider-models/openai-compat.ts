@@ -666,22 +666,39 @@ const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as c
 // at request time, downstream of the omitReasoningEffort gate in xai-responses.ts.
 const XAI_REASONING_EFFORT_MAP = { minimal: "low" } as const;
 
+// Single source of truth for curated → Model fan-in. Used by the static-seed,
+// overlay, and inject paths so curated reasoning/effort flags survive an
+// online refresh (xAI's /v1/models lacks reasoning metadata and
+// fetchOpenAICompatibleModels defaults reasoning to false). Caller supplies a
+// `base` Model (either a freshly synthesised seed or a dynamic-fetched entry);
+// the helper layers curated fields on top, preserving any `compat` keys the
+// base already carries.
+function mergeCuratedIntoModel(base: Model<"openai-responses">, curated: XAICuratedModel): Model<"openai-responses"> {
+	const effort = curated.supportsReasoningEffort;
+	const compat = effort === undefined ? base.compat : { ...(base.compat ?? {}), supportsReasoningEffort: effort };
+	return {
+		...base,
+		contextWindow: curated.contextWindow,
+		name: curated.name ?? base.name,
+		reasoning: curated.reasoning ?? true,
+		...(compat !== undefined ? { compat } : {}),
+	};
+}
+
 function applyXAIOAuthCuration(dynamic: readonly Model<"openai-responses">[]): Model<"openai-responses">[] {
 	// (1) Filter tool-surface prefixes (picker pollution defense).
 	const filtered = dynamic.filter(e => !XAI_NON_CHAT_PREFIXES.some(p => e.id.startsWith(p)));
 
 	// (2) Overlay curated metadata onto dynamic-fetch matches. xAI's /v1/models
-	// does not return context_window metadata, so without this overlay the
-	// runtime falls back to the bundled-reference default (effectively 128k).
+	// does not return context_window or reasoning metadata, so without this
+	// overlay the runtime falls back to the bundled-reference default
+	// (effectively 128k context) and reasoning: false (suppressing the effort
+	// dial and stripping thinking metadata downstream).
 	const byId = new Map<string, Model<"openai-responses">>(filtered.map(e => [e.id, e]));
 	for (const curated of XAI_OAUTH_CURATED_MODELS) {
 		const existing = byId.get(curated.id);
 		if (existing) {
-			byId.set(curated.id, {
-				...existing,
-				contextWindow: curated.contextWindow,
-				name: curated.name ?? existing.name,
-			});
+			byId.set(curated.id, mergeCuratedIntoModel(existing, curated));
 		}
 	}
 
@@ -695,12 +712,11 @@ function applyXAIOAuthCuration(dynamic: readonly Model<"openai-responses">[]): M
 	if (template) {
 		for (const curated of XAI_OAUTH_CURATED_MODELS) {
 			if (!byId.has(curated.id)) {
-				byId.set(curated.id, {
-					...template,
-					id: curated.id,
-					name: curated.name ?? curated.id,
-					contextWindow: curated.contextWindow,
-				});
+				// Reset id/name on the template before merging so the helper's
+				// `curated.name ?? base.name` clause falls back to curated.id
+				// (the inject contract), not to the unrelated template's label.
+				const base: Model<"openai-responses"> = { ...template, id: curated.id, name: curated.id };
+				byId.set(curated.id, mergeCuratedIntoModel(base, curated));
 			}
 		}
 	}
@@ -740,24 +756,27 @@ export function xaiOAuthModelManagerOptions(
 	// maxTokens uses UNK_MAX_TOKENS to match the shape fetchOpenAICompatibleModels
 	// emits for entries without a bundled reference, so id-keyed overlays from a
 	// successful dynamic fetch merge cleanly.
-	const staticModels: Model<"openai-responses">[] = XAI_OAUTH_CURATED_MODELS.map(curated => ({
-		id: curated.id,
-		name: curated.name ?? curated.id,
-		api: "openai-responses",
-		provider: "xai-oauth",
-		baseUrl: resolvedBaseUrl,
-		reasoning: curated.reasoning ?? true,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: curated.contextWindow,
-		maxTokens: UNK_MAX_TOKENS,
-		compat: {
-			reasoningEffortMap: XAI_REASONING_EFFORT_MAP,
-			...(curated.supportsReasoningEffort !== undefined
-				? { supportsReasoningEffort: curated.supportsReasoningEffort }
-				: {}),
-		},
-	}));
+	const staticModels: Model<"openai-responses">[] = XAI_OAUTH_CURATED_MODELS.map(curated => {
+		// Synthesise a bare base then layer curated metadata via the same helper
+		// the dynamic overlay/inject paths use. Locks the curated → Model
+		// invariant in one place; future XAICuratedModel fields fan out
+		// automatically. `name: curated.id` is a sentinel — the helper rewrites
+		// it to `curated.name ?? base.name`, so curated.name wins when set.
+		const base: Model<"openai-responses"> = {
+			id: curated.id,
+			name: curated.id,
+			api: "openai-responses",
+			provider: "xai-oauth",
+			baseUrl: resolvedBaseUrl,
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: curated.contextWindow,
+			maxTokens: UNK_MAX_TOKENS,
+			compat: { reasoningEffortMap: XAI_REASONING_EFFORT_MAP },
+		};
+		return mergeCuratedIntoModel(base, curated);
+	});
 	if (!base.fetchDynamicModels) {
 		return { ...base, staticModels };
 	}
