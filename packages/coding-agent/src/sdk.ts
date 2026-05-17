@@ -1190,7 +1190,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			customTools.push(...(imageGenTools as unknown as CustomTool[]));
 		}
 
-		const ttsTools = await logger.time("getTtsTools", () => getTtsTools());
+		const ttsTools = await logger.time("getTtsTools", () => getTtsTools(modelRegistry));
 		if (ttsTools.length > 0) {
 			customTools.push(...(ttsTools as unknown as CustomTool[]));
 		}

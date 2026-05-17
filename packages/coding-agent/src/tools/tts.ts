@@ -3,6 +3,7 @@
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import * as z from "zod/v4";
+import type { ModelRegistry } from "../config/model-registry";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
 
@@ -134,6 +135,22 @@ export const ttsTool: CustomTool<typeof ttsSchema, TtsToolDetails> = {
 	},
 };
 
-export async function getTtsTools(): Promise<CustomTool[]> {
+/**
+ * Returns the xAI Grok Voice TTS tool only when xAI credentials are reachable
+ * — either an active xai-oauth (SuperGrok) session or a static XAI_API_KEY.
+ *
+ * Registering the tool unconditionally lets the model attempt a synthesis call
+ * that then fails at execute time with "No xAI credentials". That wastes a
+ * turn and pollutes the tool surface for users on other providers. Probing
+ * here keeps the model's available-tool list honest.
+ *
+ * The probe runs through ModelRegistry.getApiKeyForProvider("xai-oauth"),
+ * which already triggers the AuthStorage refresh cascade — so a token that
+ * is expired but refreshable will be refreshed and the tool will register.
+ * Only truly absent credentials cause an empty return.
+ */
+export async function getTtsTools(modelRegistry: ModelRegistry): Promise<CustomTool[]> {
+	const creds = await resolveXAIHttpCredentials(modelRegistry);
+	if (!creds) return [];
 	return [ttsTool as unknown as CustomTool];
 }
