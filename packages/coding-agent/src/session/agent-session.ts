@@ -445,6 +445,44 @@ function todoClearKey(phaseName: string, taskContent: string): string {
 	return `${phaseName}\u0000${taskContent}`;
 }
 
+const IRC_REPLY_MAX_BYTES = 4096;
+
+/**
+ * Collapse degenerate IRC ephemeral replies before they hit the relay.
+ * Models occasionally loop on a single line (~16 reports of N-times-repeated
+ * replies); compress runs longer than 3 down to one instance + `[…N×]`, then
+ * cap at 4 KiB so a runaway reply can't flood the channel.
+ */
+function dedupeIrcReply(text: string): string {
+	if (!text) return text;
+	const lines = text.split("\n");
+	const out: string[] = [];
+	let i = 0;
+	while (i < lines.length) {
+		let j = i + 1;
+		while (j < lines.length && lines[j] === lines[i]) j++;
+		const runLen = j - i;
+		if (runLen > 3) {
+			out.push(lines[i], `[…${runLen}×]`);
+		} else {
+			for (let k = 0; k < runLen; k++) out.push(lines[i]);
+		}
+		i = j;
+	}
+	let result = out.join("\n");
+	if (Buffer.byteLength(result, "utf8") > IRC_REPLY_MAX_BYTES) {
+		// Trim by characters until we're under the byte budget — handles multi-byte
+		// glyphs at the boundary without splitting them.
+		const suffix = "\n[…truncated]";
+		const budget = IRC_REPLY_MAX_BYTES - Buffer.byteLength(suffix, "utf8");
+		while (Buffer.byteLength(result, "utf8") > budget) {
+			result = result.slice(0, -1);
+		}
+		result += suffix;
+	}
+	return result;
+}
+
 /**
  * Build the per-request `metadata` payload for the Anthropic provider, shaped
  * like real Claude Code's `getAPIMetadata` output (`{ session_id, account_uuid,
@@ -1725,10 +1763,6 @@ export class AgentSession {
 			}
 			this.#resolveRetry();
 
-			if (msg.stopReason === "aborted" && this.#checkpointState) {
-				this.#checkpointState = undefined;
-				this.#pendingRewindReport = undefined;
-			}
 			const compactionTask = this.#checkCompaction(msg);
 			this.#trackPostPromptTask(compactionTask);
 			await compactionTask;
@@ -4620,7 +4654,12 @@ export class AgentSession {
 
 	/** Schedule auto-removal of completed/abandoned tasks after a delay. */
 	#scheduleTodoAutoClear(phases: TodoPhase[]): void {
-		const delaySec = this.settings.get("tasks.todoClearDelay") ?? 60;
+		// Default bumped from 60s to 30 min: the prior 60s splice mutated canonical
+		// state mid-turn, so the model observed phase totals shrinking ("6 → 5")
+		// between tool calls. Surviving the turn matches user expectations; a
+		// render-time filter in the UI consumer would be cleaner but lives in a
+		// different package and is out of scope for this fix.
+		const delaySec = this.settings.get("tasks.todoClearDelay") ?? 1800;
 		if (delaySec < 0) return; // "Never" — no auto-clear
 		const delayMs = delaySec * 1000;
 		const doneKeys = new Set<string>();
@@ -7643,6 +7682,11 @@ export class AgentSession {
 		const context: Context = {
 			systemPrompt: this.systemPrompt,
 			messages: llmMessages,
+			// Empty tools array: with toolChoice="none" some encoders still serialize the
+			// recipient's tool catalog and the model leaks raw call markup
+			// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
+			// removes the surface entirely.
+			tools: [],
 		};
 		const options = this.prepareSimpleStreamOptions(
 			{
@@ -7678,7 +7722,7 @@ export class AgentSession {
 		if (!assistantMessage) {
 			throw new Error("Ephemeral turn ended without a final message");
 		}
-		return { replyText: replyText.trim(), assistantMessage };
+		return { replyText: dedupeIrcReply(replyText.trim()), assistantMessage };
 	}
 
 	/**
@@ -7691,14 +7735,24 @@ export class AgentSession {
 		const messages = [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant") {
+			const preservedBlocks: AssistantMessage["content"] = [];
+			// Preserve thinking blocks: DeepSeek-class encoders replay them as
+			// `reasoning_content` and reject the request (HTTP 400) when the field
+			// goes missing on a turn that previously emitted thinking.
+			for (const c of streaming.content) {
+				if (c.type === "thinking") preservedBlocks.push(c);
+			}
 			const streamingText = streaming.content
 				.filter((c): c is TextContent => c.type === "text")
 				.map(c => c.text)
 				.join("");
 			if (streamingText) {
+				preservedBlocks.push({ type: "text", text: streamingText });
+			}
+			if (preservedBlocks.length > 0) {
 				const normalized: AssistantMessage = {
 					...streaming,
-					content: [{ type: "text", text: streamingText }],
+					content: preservedBlocks,
 				};
 				const lastMessage = messages.at(-1);
 				if (lastMessage?.role === "assistant") {
