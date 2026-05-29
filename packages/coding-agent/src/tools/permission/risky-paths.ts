@@ -27,7 +27,8 @@ export function resolveTargetPath(targetPath: string, workspaceRoot: string): st
 	return path.normalize(p);
 }
 
-function isInside(child: string, parent: string): boolean {
+/** True when `child` is `parent` itself or a path nested inside it. */
+export function isPathInside(child: string, parent: string): boolean {
 	const rel = path.relative(parent, child);
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
@@ -65,7 +66,7 @@ export function classifyRiskyPath(targetPath: string, workspaceRoot: string): Ri
 	if (path.dirname(resolved) === home && base.startsWith(".")) {
 		return { block: true, reason: `Refusing to modify home dotfile: ${resolved}` };
 	}
-	if (!isInside(resolved, root)) {
+	if (!isPathInside(resolved, root)) {
 		return { block: true, reason: `Path is outside the workspace root: ${resolved}` };
 	}
 	return null;

@@ -1,6 +1,6 @@
 import { extractApprovalPath } from "../../edit/approval-path";
 import { isInternalUrlPath } from "../path-utils";
-import { classifyRiskyPath } from "./risky-paths";
+import { classifyRiskyPath, isPathInside, resolveTargetPath } from "./risky-paths";
 import { analyzeBashCommand, containsDangerousCode } from "./safety-net/index";
 
 /** A heuristic block decision with a human-readable reason. */
@@ -38,7 +38,15 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 		case "bash": {
 			const command = typeof record.command === "string" ? record.command : "";
 			if (!command) return null;
-			const result = analyzeBashCommand(command, ctx.workspaceRoot);
+			// The bash tool resolves the command relative to an optional `cwd` arg, so
+			// analysis MUST use that same cwd — otherwise `{ cwd: "/etc", command:
+			// "rm -rf ./nginx" }` looks workspace-local but runs in /etc.
+			const rawCwd = typeof record.cwd === "string" && record.cwd.length > 0 ? record.cwd : undefined;
+			const effectiveCwd = rawCwd ? resolveTargetPath(rawCwd, ctx.workspaceRoot) : ctx.workspaceRoot;
+			if (rawCwd && !isPathInside(effectiveCwd, ctx.workspaceRoot)) {
+				return { block: true, reason: `Refusing to run bash outside the workspace root: ${effectiveCwd}` };
+			}
+			const result = analyzeBashCommand(command, effectiveCwd);
 			return result ? { block: true, reason: result.reason } : null;
 		}
 		case "eval": {

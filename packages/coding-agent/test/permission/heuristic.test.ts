@@ -14,6 +14,18 @@ describe("classifyHeuristic", () => {
 		expect(classifyHeuristic("bash", { command: "" }, CTX)).toBeNull();
 	});
 
+	it("blocks bash whose cwd escapes the workspace", () => {
+		expect(classifyHeuristic("bash", { command: "ls", cwd: "/etc" }, CTX)?.block).toBe(true);
+		expect(classifyHeuristic("bash", { command: "ls", cwd: "../.." }, CTX)?.block).toBe(true);
+	});
+
+	it("analyzes bash relative to an in-workspace cwd arg", () => {
+		// Safe relative to the given (in-workspace) cwd.
+		expect(classifyHeuristic("bash", { command: "ls -la", cwd: "src" }, CTX)).toBeNull();
+		// Destructive even when scoped to an in-workspace cwd.
+		expect(classifyHeuristic("bash", { command: "rm -rf /", cwd: "src" }, CTX)?.block).toBe(true);
+	});
+
 	it("blocks eval cells containing destructive code", () => {
 		const args = { cells: [{ language: "py", code: 'os.system("rm -rf /tmp/x")' }] };
 		expect(classifyHeuristic("eval", args, CTX)?.block).toBe(true);
