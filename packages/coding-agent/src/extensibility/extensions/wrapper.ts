@@ -5,7 +5,8 @@ import type { AgentTool, AgentToolContext, AgentToolUpdateCallback } from "@oh-m
 import type { ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import type { Settings } from "../../config/settings";
 import type { Theme } from "../../modes/theme/theme";
-import { type ApprovalMode, formatApprovalPrompt, requiresApproval } from "../../tools/approval";
+import { formatApprovalPrompt, type PermissionMode } from "../../tools/approval";
+import { evaluatePermission } from "../../tools/permission/evaluate";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
 import type { RegisteredTool, ToolCallEventResult } from "./types";
@@ -111,16 +112,29 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		context?: AgentToolContext,
 	) {
 		// 1. Check approval policy (before extension handlers).
-		// CLI `--auto-approve` / `--yolo` sets approval mode to yolo.
-		// User `tools.approval.<tool>` policies are still applied in all modes.
+		// CLI `--auto-approve` / `--yolo` forces yolo mode.
+		// User `tools.approval.<tool>` policies remain authoritative in all modes.
 		const cliAutoApprove = context?.autoApprove === true;
 		const settings: Settings | undefined = context?.settings;
-		const configuredMode = (settings?.get("tools.approvalMode") ?? "yolo") as ApprovalMode;
-		const approvalMode: ApprovalMode = cliAutoApprove ? "yolo" : configuredMode;
+		const configuredMode = (settings?.get("tools.approvalMode") ?? "yolo") as PermissionMode;
+		const approvalMode: PermissionMode = cliAutoApprove ? "yolo" : configuredMode;
 		const userPolicies = (settings?.get("tools.approval") ?? {}) as Record<string, unknown>;
-		const approvalCheck = requiresApproval(this.tool, params, approvalMode, userPolicies);
+		const decision = await evaluatePermission({
+			tool: this.tool,
+			args: params,
+			mode: approvalMode,
+			userPolicies,
+			workspaceRoot: context?.cwd ?? process.cwd(),
+			hasUI: this.runner.hasUI(),
+			guardian: context?.guardian,
+			signal,
+		});
 
-		if (approvalCheck.required) {
+		if (decision.action === "deny") {
+			throw new Error(`Tool call denied: ${this.tool.name}${decision.reason ? ` — ${decision.reason}` : ""}`);
+		}
+
+		if (decision.action === "prompt") {
 			// Check if UI is available
 			if (!this.runner.hasUI()) {
 				throw new Error(
@@ -133,7 +147,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			}
 
 			const uiContext = this.runner.getUIContext();
-			const choice = await uiContext.select(formatApprovalPrompt(this.tool, params, approvalCheck.reason), [
+			const choice = await uiContext.select(formatApprovalPrompt(this.tool, params, decision.reason), [
 				"Approve",
 				"Deny",
 			]);

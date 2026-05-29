@@ -17,6 +17,7 @@ import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { isInternalUrlPath } from "../tools/path-utils";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
+import { extractApprovalPath } from "./approval-path";
 import { executeHashlineSingle, type HashlineParams, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
@@ -27,6 +28,7 @@ import { type EditToolDetails, type EditToolPerFileResult, getLspBatchRequest, t
 export * from "@oh-my-pi/hashline";
 export { DEFAULT_EDIT_MODE, type EditMode, normalizeEditMode } from "../utils/edit-mode";
 export * from "./apply-patch";
+export * from "./approval-path";
 export * from "./diff";
 export * from "./file-snapshot-store";
 export * from "./hashline";
@@ -258,21 +260,6 @@ async function executeSinglePathEntries(
 		// indistinguishable from success).
 		...(errorCount > 0 ? { isError: true } : {}),
 	};
-}
-
-function extractApprovalPath(args: unknown): string {
-	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-	const input = typeof record.input === "string" ? record.input : undefined;
-	if (input) {
-		const hashlineMatch = /^(?:¶|§|@)([^\s#]+)/m.exec(input);
-		if (hashlineMatch?.[1]) return hashlineMatch[1];
-
-		const applyPatchMatch = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(input);
-		if (applyPatchMatch?.[1]) return applyPatchMatch[1].trim();
-	}
-
-	const targetPath = record.path;
-	return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : "(unknown)";
 }
 
 export class EditTool implements AgentTool<TInput> {

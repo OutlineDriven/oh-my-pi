@@ -199,6 +199,7 @@ import {
 	SILENT_ABORT_MARKER,
 	stripImagesFromMessage,
 } from "./messages";
+import { formatContextFallbackNotice } from "./context-fallback-notice";
 import { formatSessionDumpText } from "./session-dump-format";
 import type {
 	BranchSummaryEntry,
@@ -6132,6 +6133,14 @@ export class AgentSession {
 				from: `${currentModel.provider}/${currentModel.id}`,
 				to: `${targetModel.provider}/${targetModel.id}`,
 			});
+			this.emitNotice(
+				"info",
+				formatContextFallbackNotice(
+					`${currentModel.provider}/${currentModel.id}`,
+					`${targetModel.provider}/${targetModel.id}`,
+				),
+				"context-fallback",
+			);
 			return true;
 		} catch (error) {
 			logger.warn("Context promotion failed", {

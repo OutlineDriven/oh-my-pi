@@ -150,6 +150,7 @@ import {
 import { ToolContextStore } from "./tools/context";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
+import { GuardianJudge } from "./tools/permission/guardian";
 import { queueResolveHandler } from "./tools/resolve";
 import { ttsTool } from "./tools/tts";
 import { EventBus } from "./utils/event-bus";
@@ -1481,6 +1482,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			void extensionRunner.emitCredentialDisabled(event);
 		}
 
+		const guardianJudge = new GuardianJudge(modelRegistry, settings, () => agent.state.model);
 		const getSessionContext = () => ({
 			sessionManager,
 			modelRegistry,
@@ -1492,6 +1494,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			},
 			settings,
 			autoApprove: options.autoApprove ?? false,
+			cwd,
+			guardian: guardianJudge,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
 

@@ -13,7 +13,17 @@ export type { ToolApproval, ToolApprovalDecision, ToolTier } from "@oh-my-pi/pi-
 export type ApprovalPolicy = "allow" | "deny" | "prompt";
 export type ApprovalMode = "always-ask" | "write" | "yolo";
 
-type ApprovalSubject = Pick<AgentTool, "name" | "approval" | "formatApprovalDetails">;
+/** Full set of approval modes, including the non-tier heuristic/LLM modes. */
+export type PermissionMode = ApprovalMode | "heuristic" | "guardian" | "hybrid";
+
+const TIER_MODES: ReadonlySet<string> = new Set(["always-ask", "write", "yolo"]);
+
+/** Narrow a permission mode to the tier-based subset handled by `resolveApproval`. */
+export function isTierMode(mode: PermissionMode): mode is ApprovalMode {
+	return TIER_MODES.has(mode);
+}
+
+export type ApprovalSubject = Pick<AgentTool, "name" | "approval" | "formatApprovalDetails">;
 
 export interface ResolvedApproval {
 	policy: ApprovalPolicy;
@@ -40,7 +50,7 @@ const APPROVAL_MODE_MAX_TIER: Record<ApprovalMode, ToolTier> = {
 const DEFAULT_PROMPT_TRUNCATE_CHARS = 2000;
 
 /** Best-effort conversion of an arbitrary user-supplied value to a policy. */
-function normalizePolicy(value: unknown): ApprovalPolicy | undefined {
+export function normalizePolicy(value: unknown): ApprovalPolicy | undefined {
 	if (typeof value !== "string") return undefined;
 	const lowered = value.trim().toLowerCase();
 	return POLICY_VALUES.has(lowered as ApprovalPolicy) ? (lowered as ApprovalPolicy) : undefined;
@@ -69,7 +79,7 @@ function normalizeDecision(value: unknown): Omit<ResolvedApproval, "policy"> {
 	return { tier: "exec", override: false };
 }
 
-function getToolDecision(tool: ApprovalSubject, args: unknown): Omit<ResolvedApproval, "policy"> {
+export function getToolDecision(tool: ApprovalSubject, args: unknown): Omit<ResolvedApproval, "policy"> {
 	const approval = tool.approval;
 	const decision: ToolApprovalDecision | undefined = typeof approval === "function" ? approval(args) : approval;
 	return normalizeDecision(decision);
