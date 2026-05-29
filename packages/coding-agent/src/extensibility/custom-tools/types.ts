@@ -22,6 +22,7 @@ import type { HookUIContext } from "../../extensibility/hooks/types";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "../../tools/todo-write";
+import type { GuardianJudge } from "../../tools/permission/guardian";
 
 /** Alias for clarity */
 export type CustomToolUIContext = HookUIContext;
@@ -88,6 +89,10 @@ export interface CustomToolContext {
 	settings?: Settings;
 	/** Whether to auto-approve all destructive tool operations (--auto-approve CLI flag) */
 	autoApprove?: boolean;
+	/** Workspace root directory, used for permission/path checks. */
+	cwd?: string;
+	/** LLM safety judge for the guardian/hybrid approval modes. */
+	guardian?: GuardianJudge;
 }
 
 /** Session event passed to onSession callback */

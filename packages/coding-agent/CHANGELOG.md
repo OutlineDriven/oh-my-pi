@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added three tool-permission modes selectable via `tools.approvalMode` or `--approval-mode`: `heuristic` (a blacklist that blocks destructive commands, dangerous interpreter one-liners, and writes/edits outside the workspace or to sensitive paths), `guardian` (an ephemeral LLM safety judge that reviews exec-tier tool calls and returns allow/deny), and `hybrid` (runs the heuristic first and escalates only blocked calls to the Guardian). The existing `yolo`/`always-ask`/`write` tier modes are unchanged and `yolo` remains the default. Explicit `tools.approval.<tool>` policies stay authoritative in every mode.
+- Added the `tools.guardian.model` setting (defaults to a fast model) and `tools.guardian.maxRetries` (default 3) to configure the Guardian safety judge; the judge retries transient failures with exponential backoff and then fails safe (prompts when a UI exists, otherwise denies).
+- Vendored the `cc-safety-net` command analyzer (MIT, [kenryu42/claude-code-safety-net](https://github.com/kenryu42/claude-code-safety-net)) under `tools/permission/safety-net` to power the heuristic blacklist.
+
 ## [15.5.11] - 2026-05-29
 
 ### Added

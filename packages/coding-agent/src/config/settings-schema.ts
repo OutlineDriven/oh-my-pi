@@ -1830,14 +1830,20 @@ export const SETTINGS_SCHEMA = {
 	//   "yolo"       — auto-approves every tier.
 	"tools.approvalMode": {
 		type: "enum",
-		values: ["always-ask", "write", "yolo"] as const,
+		values: ["always-ask", "write", "yolo", "heuristic", "guardian", "hybrid"] as const,
 		default: "yolo",
 		ui: {
 			tab: "interaction",
 			label: "Tool Approval",
 			description:
-				"Default approval behaviour for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
+				"Default approval behaviour for tool calls. Tier modes ('Always ask', 'Write', 'Yolo') gate by tool tier. 'Heuristic' blocks destructive commands and risky paths via a blacklist. 'Guardian' asks an LLM safety judge to review exec-tier calls. 'Hybrid' runs the heuristic first and escalates only blocked calls to the Guardian. User policy may still prompt or block in every mode.",
 			options: [
+				{
+					value: "yolo",
+					label: "Yolo",
+					description:
+						"Auto-approve read, write, and exec tools. User policy can still require confirmation or block calls.",
+				},
 				{
 					value: "always-ask",
 					label: "Always ask",
@@ -1850,12 +1856,46 @@ export const SETTINGS_SCHEMA = {
 						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, task, recipe, and ssh.",
 				},
 				{
-					value: "yolo",
-					label: "Yolo",
+					value: "heuristic",
+					label: "Heuristic",
 					description:
-						"Auto-approve read, write, and exec tools. User policy can still require confirmation or block calls.",
+						"Block destructive commands (rm -rf, force-push, …), dangerous interpreter one-liners, and writes/edits outside the workspace or to sensitive paths; allow everything else.",
+				},
+				{
+					value: "guardian",
+					label: "Guardian",
+					description:
+						"Ask an LLM safety judge to review exec-tier tool calls (bash, eval, browser, task, recipe, ssh) and allow or deny each one; read and write tiers are auto-approved.",
+				},
+				{
+					value: "hybrid",
+					label: "Hybrid",
+					description:
+						"Run the heuristic blacklist first; escalate only blocked calls to the Guardian LLM judge, which may overturn or confirm the block.",
 				},
 			],
+		},
+	},
+
+	// Guardian LLM safety judge (used by the "guardian" and "hybrid" approval modes).
+	"tools.guardian.model": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tools",
+			label: "Guardian Model",
+			description:
+				"Model used by the Guardian safety judge (e.g. 'openai/gpt-5.4'). Leave empty to default to a fast model.",
+		},
+	},
+
+	"tools.guardian.maxRetries": {
+		type: "number",
+		default: 3,
+		ui: {
+			tab: "tools",
+			label: "Guardian Retries",
+			description: "How many times to retry the Guardian judge on transient errors before failing safe.",
 		},
 	},
 
