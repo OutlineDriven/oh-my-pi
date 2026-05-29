@@ -199,7 +199,7 @@ import {
 	SILENT_ABORT_MARKER,
 	stripImagesFromMessage,
 } from "./messages";
-import { formatContextFallbackNotice } from "./context-fallback-notice";
+import { type ContextFallbackTrigger, formatContextFallbackNotice } from "./context-fallback-notice";
 import { formatSessionDumpText } from "./session-dump-format";
 import type {
 	BranchSummaryEntry,
@@ -5802,7 +5802,7 @@ export class AgentSession {
 			}
 
 			// Try context promotion first - switch to a larger model and retry without compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
+			const promoted = await this.#tryContextPromotion(assistantMessage, "overflow");
 			if (promoted) {
 				// Retry on the promoted (larger) model without compacting
 				this.#scheduleAgentContinue({ delayMs: 100, generation });
@@ -5829,7 +5829,7 @@ export class AgentSession {
 				this.agent.replaceMessages(messages.slice(0, -1));
 			}
 
-			const promoted = await this.#tryContextPromotion(assistantMessage);
+			const promoted = await this.#tryContextPromotion(assistantMessage, "length");
 			if (promoted) {
 				logger.debug("Context promotion triggered by response.incomplete (length stop)", {
 					from: `${assistantMessage.provider}/${assistantMessage.model}`,
@@ -5868,7 +5868,7 @@ export class AgentSession {
 		}
 		if (shouldCompact(contextTokens, contextWindow, compactionSettings)) {
 			// Try promotion first — if a larger model is available, switch instead of compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
+			const promoted = await this.#tryContextPromotion(assistantMessage, "threshold");
 			if (!promoted) {
 				return await this.#runAutoCompaction("threshold", false, false, allowDefer);
 			}
@@ -6115,7 +6115,7 @@ export class AgentSession {
 	 * Attempt context promotion to a larger model.
 	 * Returns true if promotion succeeded (caller should retry without compacting).
 	 */
-	async #tryContextPromotion(assistantMessage: AssistantMessage): Promise<boolean> {
+	async #tryContextPromotion(assistantMessage: AssistantMessage, trigger: ContextFallbackTrigger): Promise<boolean> {
 		const promotionSettings = this.settings.getGroup("contextPromotion");
 		if (!promotionSettings.enabled) return false;
 		const currentModel = this.model;
@@ -6138,6 +6138,7 @@ export class AgentSession {
 				formatContextFallbackNotice(
 					`${currentModel.provider}/${currentModel.id}`,
 					`${targetModel.provider}/${targetModel.id}`,
+					trigger,
 				),
 				"context-fallback",
 			);
