@@ -1082,8 +1082,9 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "context",
-			label: "Auto-Promote Context",
-			description: "Promote to a larger-context model on context overflow instead of compacting",
+			label: "Context Fallback",
+			description:
+				"On context overflow, fall back to a larger-context model instead of compacting. Turn OFF to pin the current model (it compacts instead).",
 		},
 	},
 

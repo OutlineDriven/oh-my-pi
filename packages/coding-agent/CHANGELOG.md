@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a visible session notice when context-overflow fallback switches the model to a larger-context one (previously only a debug log). The notice names both the previous and new `provider/model` so the model swap is no longer silent.
+
+### Changed
+
+- Renamed the `contextPromotion.enabled` setting's UI label from "Auto-Promote Context" to "Context Fallback" with a clearer description (turning it OFF pins the current model and compacts instead). The setting key, type, group, and default (`true`) are unchanged.
+
 ## [15.5.11] - 2026-05-29
 
 ### Added
