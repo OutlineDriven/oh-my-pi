@@ -127,6 +127,25 @@ function isLiteralPath(target: string): boolean {
 	return !/[*?[]/.test(target); // globs are not a single literal target
 }
 
+/** A glued redirection operator (`>`, `>>`, `2>`, `&>`, `<`) that can prefix a path token. */
+const REDIRECTION_PREFIX = /^(?:[0-9]*|&)?(?:>>|>|<)/;
+
+/**
+ * Extract the filesystem-path candidate from a single shell token, or `null` when
+ * the token is a bare word / operator that names no path. Strips a glued
+ * redirection operator, a leading `--opt=` (so `--out=/etc/x` is seen), and
+ * surrounding quotes. Only tokens carrying a `/` separator or a `~` home prefix
+ * are returned — a bare word resolves under the cwd and is no escape risk.
+ */
+function bashPathArgument(token: string): string | null {
+	let t = token.replace(REDIRECTION_PREFIX, "");
+	const eq = t.lastIndexOf("=");
+	if (eq !== -1) t = t.slice(eq + 1);
+	t = t.replace(/^["']|["']$/g, "");
+	if (!t) return null;
+	return t.includes("/") || t.startsWith("~") ? t : null;
+}
+
 /**
  * Prove-or-block predicate for the bash tool. Returns `allow` ONLY for a flat,
  * statically-analyzable command that provably stays in the workspace and carries
@@ -217,6 +236,26 @@ function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: H
 	const commandForAnalysis = hasExplicitCwd ? rawCommand : extractLeadingCd(rawCommand).command;
 	const result = analyzeBashCommand(commandForAnalysis, effectiveCwd);
 	if (result) return deny(result.reason);
+
+	// STEP 4.5: a path-shaped ARGUMENT or redirection target that resolves outside
+	// the workspace is unprovable → `uncertain`. The analyzer only flags a fixed
+	// denylist of destructive shapes (rm -rf, …); a plain `touch /etc/omp-test` or
+	// `… > ~/.ssh/config` writes outside the workspace yet reads "clean".
+	//
+	// This is a deliberately shallow whitespace scan, NOT a shell parser — the
+	// lightweight permission module must not take on a tokenizer dependency. It can
+	// over-escalate (a `/`-bearing substring inside a quoted string) and a path
+	// split across quoted whitespace may be seen only in fragments, but BOTH fail
+	// toward `uncertain`, never toward a false `allow`: a flat string cannot tell a
+	// read from a write, so an unprovable path escalates (heuristic denies, hybrid
+	// asks the judge) rather than hard-denying. Relative tokens resolve from the
+	// effective cwd; containment is checked against the workspace root.
+	for (const token of commandForAnalysis.split(/\s+/)) {
+		const candidate = bashPathArgument(token);
+		if (candidate && riskyPathReason(resolveTargetPath(candidate, effectiveCwd), ctx)) {
+			return uncertain(`Cannot prove bash path argument stays in workspace: ${candidate}`);
+		}
+	}
 
 	// STEP 5: proven safe.
 	return ALLOW;

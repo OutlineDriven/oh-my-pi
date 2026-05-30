@@ -156,6 +156,36 @@ describe("classifyHeuristic — bash unprovable constructs (uncertain)", () => {
 	});
 });
 
+describe("classifyHeuristic — bash path arguments outside the workspace (uncertain)", () => {
+	it("flags a write to a system path argument (touch /etc/...)", () => {
+		expect(decide("bash", { command: "touch /etc/omp-test" })).toBe("uncertain");
+	});
+	it("flags a redirection target outside the workspace", () => {
+		expect(decide("bash", { command: "echo x > /etc/omp-test" })).toBe("uncertain");
+	});
+	it("flags a redirection target onto an SSH path", () => {
+		expect(decide("bash", { command: "cat secret > ~/.ssh/config" })).toBe("uncertain");
+	});
+	it("flags a glued redirection target outside the workspace", () => {
+		expect(decide("bash", { command: "echo x >/etc/omp-test" })).toBe("uncertain");
+	});
+	it("flags a relative path argument that escapes the workspace", () => {
+		expect(decide("bash", { command: "cp ../../outside/x ." })).toBe("uncertain");
+	});
+	it("flags reading a home dotfile via an argument", () => {
+		expect(decide("bash", { command: "cat ~/.netrc" })).toBe("uncertain");
+	});
+	it("allows an in-workspace path argument with a separator", () => {
+		expect(decide("bash", { command: "grep -c foo src/a.ts" })).toBe("allow");
+	});
+	it("allows a bare-word argument (no separator) under the workspace", () => {
+		expect(decide("bash", { command: "cat README.md" })).toBe("allow");
+	});
+	it("allows a relative in-workspace path argument", () => {
+		expect(decide("bash", { command: "cat ./src/index.ts" })).toBe("allow");
+	});
+});
+
 describe("classifyHeuristic — eval", () => {
 	it("denies eval cells containing destructive code", () => {
 		expect(decide("eval", { cells: [{ language: "py", code: 'os.system("rm -rf /tmp/x")' }] })).toBe("deny");
