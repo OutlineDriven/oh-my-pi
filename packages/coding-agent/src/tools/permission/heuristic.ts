@@ -6,11 +6,29 @@ import { isInternalUrlPath } from "../path-utils";
 import { classifyRiskyPath, isPathInside, realpathOrSelf, resolveTargetPath } from "./risky-paths";
 import { analyzeBashCommand, containsDangerousCode } from "./safety-net/index";
 
-/** A heuristic block decision with a human-readable reason. */
-export interface HeuristicBlock {
-	block: true;
-	reason: string;
+/**
+ * Heuristic verdict — a THREE-state decision, deliberately not a boolean.
+ *
+ * The previous binary `block | null` overloaded `null` to mean BOTH "proven
+ * workspace-safe" AND "found nothing wrong" — and every shell/tool construct
+ * that relocated the effective target (mid-command `cd`, subshell, `lsp request`,
+ * the next exec tool) slipped through the second meaning, generating an
+ * open-ended stream of bypasses. The fix is prove-or-block: `allow` requires
+ * POSITIVE proof of a recognized-safe shape; anything that cannot be proven safe
+ * is `uncertain` and fails safe at the orchestrator (heuristic → deny, hybrid →
+ * escalate to the Guardian judge). `deny` is reserved for proven-dangerous /
+ * proven-out-of-workspace calls.
+ */
+export type HeuristicDecision = "allow" | "deny" | "uncertain";
+
+export interface HeuristicVerdict {
+	decision: HeuristicDecision;
+	reason?: string;
 }
+
+const ALLOW: HeuristicVerdict = { decision: "allow" };
+const deny = (reason: string): HeuristicVerdict => ({ decision: "deny", reason });
+const uncertain = (reason: string): HeuristicVerdict => ({ decision: "uncertain", reason });
 
 /** Context required to evaluate path-based heuristics. */
 export interface HeuristicContext {
@@ -19,25 +37,45 @@ export interface HeuristicContext {
 	tier?: ToolTier;
 }
 
+/**
+ * LSP `request` forwards a caller-chosen JSON-RPC method + payload straight to
+ * the language server, so it is only provably safe for a frozen set of read-only
+ * methods. Everything else (notably `workspace/executeCommand` /
+ * `workspace/applyEdit` and any unknown/custom method) is `uncertain`. Adding a
+ * method here is a reviewed one-line change — the DEFAULT is fail-safe.
+ */
+const SAFE_LSP_REQUEST_METHODS: ReadonlySet<string> = new Set([
+	"textDocument/hover",
+	"textDocument/definition",
+	"textDocument/typeDefinition",
+	"textDocument/declaration",
+	"textDocument/implementation",
+	"textDocument/references",
+	"textDocument/documentSymbol",
+	"textDocument/documentHighlight",
+	"textDocument/completion",
+	"textDocument/signatureHelp",
+	"textDocument/foldingRange",
+	"textDocument/selectionRange",
+	"textDocument/semanticTokens/full",
+	"textDocument/inlayHint",
+	"workspace/symbol",
+]);
+
+/** Commands that change the working directory the rest of the line runs in. */
+const RELOCATORS: ReadonlySet<string> = new Set(["cd", "pushd", "popd", "chdir", "chroot"]);
+
+/** Compound / control-flow keywords whose cwd cannot be tracked by flat segmentation. */
+const CONTROL_FLOW = /(?:^|[;&|\n\r({]\s*)(?:if|then|elif|else|fi|for|while|until|do|done|case|esac|select|function)\b/;
+
+/** A `-C` / `--directory` style chdir flag on any tool (git, make, tar, env, rsync, …). */
+const CHDIR_FLAG = /(?:^|\s)(?:-C|--directory|--chdir|--working-directory)(?:[=\s]|$)/;
+
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-function classifyFilePath(targetPath: string, ctx: HeuristicContext): HeuristicBlock | null {
-	if (!targetPath || targetPath === "(unknown)" || isInternalUrlPath(targetPath)) return null;
-	return classifyRiskyPath(targetPath, ctx.workspaceRoot);
-}
-
-/** Block on the first risky path among a list (e.g. every section of a patch). */
-function classifyFirstRiskyPath(paths: Iterable<string>, ctx: HeuristicContext): HeuristicBlock | null {
-	for (const p of paths) {
-		const block = classifyFilePath(p, ctx);
-		if (block) return block;
-	}
-	return null;
-}
-
-/** Normalize a path argument to a string list (a bare string or an array of strings). */
+/** A path argument as a string list (a bare string or an array of strings). */
 function stringValues(value: unknown): string[] {
 	if (typeof value === "string") return [value];
 	if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string");
@@ -45,119 +83,191 @@ function stringValues(value: unknown): string[] {
 }
 
 /**
- * Blacklist heuristic for tool calls, dispatched by tool name:
- * - `bash`: the vendored command analyzer (destructive `rm`/`git`/`find`/…), plus
- *   the bash tool's own critical-pattern override, so commands the analyzer misses
- *   but the tier engine always blocks (e.g. `sudo rm`) are caught here too rather
- *   than auto-approved by this mode.
- * - `eval`: interpreter dangerous-code detection over each cell's source.
- * - `write` / `edit`: risky-path rule on EVERY caller target — the plain `path`
- *   plus every apply-patch / hashline section and `*** Move to:` rename
- *   destination (an edit applies all sections, so a later escape must not hide
- *   behind an in-workspace first section).
- * - `lsp` / `ast_edit` / `tts`: risky-path rule on the caller-supplied write paths
- *   (`lsp` `rename_file` resolves `new_name` against cwd and can escape; likewise
- *   `ast_edit`'s `paths` and `tts`'s `output_path`).
- * - `generate_image` / `report_tool_issue`: write-tier, but the write target is
- *   fixed / allocated with no caller-controlled write path
- *   (`generate_image.input[].path` is a read source), so nothing to escape with —
- *   allowed.
- * - any OTHER write-tier tool: cannot be introspected for a write path, so fail
- *   safe — block (which `hybrid` escalates to the judge). Non-write tiers allowed.
- *
- * Returns a block decision or `null` when the call is considered safe.
+ * Risky-path reason for a single target, or `null` when it is an in-workspace /
+ * internal-URL / unknown path that carries no escape risk. Mirrors the skip rules
+ * the edit tool's own approval uses.
  */
-export function classifyHeuristic(toolName: string, args: unknown, ctx: HeuristicContext): HeuristicBlock | null {
+function riskyPathReason(targetPath: string, ctx: HeuristicContext): string | null {
+	if (!targetPath || targetPath === "(unknown)" || isInternalUrlPath(targetPath)) return null;
+	return classifyRiskyPath(targetPath, ctx.workspaceRoot)?.reason ?? null;
+}
+
+/**
+ * Verdict for a set of caller-supplied write paths. An EMPTY list is `uncertain`
+ * ("no path to check" ≠ "proven safe"), NOT `allow` — closing the overloaded-null
+ * leak. A risky path → `deny`; all in-workspace → `allow`.
+ */
+function classifyPathsOrUncertain(paths: string[], ctx: HeuristicContext, label: string): HeuristicVerdict {
+	if (paths.length === 0) return uncertain(`${label} has no checkable in-workspace path`);
+	for (const p of paths) {
+		const reason = riskyPathReason(p, ctx);
+		if (reason) return deny(reason);
+	}
+	return ALLOW;
+}
+
+/** True when a `cd` argument is a workspace-relative or absolute literal we can resolve statically. */
+function isLiteralPath(target: string): boolean {
+	if (!target) return false;
+	if (target.includes("$") || target.includes("`")) return false; // variable / command substitution
+	if (target.includes("~")) return false; // home expansion — not provably in-workspace
+	return !/[*?[]/.test(target); // globs are not a single literal target
+}
+
+/**
+ * Prove-or-block predicate for the bash tool. Returns `allow` ONLY for a flat,
+ * statically-analyzable command that provably stays in the workspace and carries
+ * no dangerous effect; `deny` for proven-dangerous / proven-escape; `uncertain`
+ * for every construct that defeats static cwd-tracking (subshell, substitution,
+ * control flow, shell re-entry, here-doc, background, non-leading / dynamic `cd`,
+ * tool chdir flags). First firing rule wins.
+ */
+function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: HeuristicContext): HeuristicVerdict {
+	if (rawCommand.trim() === "") return ALLOW;
+	const root = ctx.workspaceRoot;
+	const realRoot = realpathOrSelf(root);
+
+	// STEP 1: explicit cwd arg. Provable escape → deny. When present it pins the
+	// effective cwd and SUPPRESSES leading-cd proving (matching BashTool's `if (!cwd)`).
+	let effectiveCwd = root;
+	const hasExplicitCwd = typeof rawCwdArg === "string" && rawCwdArg.length > 0;
+	if (hasExplicitCwd) {
+		const resolved = realpathOrSelf(resolveTargetPath(rawCwdArg as string, root));
+		if (!isPathInside(resolved, realRoot)) {
+			return deny(`Refusing to run bash outside the workspace root: ${resolved}`);
+		}
+		effectiveCwd = resolved;
+	}
+
+	// STEP 2: constructs that defeat static segmentation / cwd-tracking → uncertain.
+	if (/\$\(|`/.test(rawCommand))
+		return uncertain("Cannot prove bash command stays in workspace: command substitution");
+	if (/[<>]\(/.test(rawCommand))
+		return uncertain("Cannot prove bash command stays in workspace: process substitution");
+	if (/(?:^|[;&|\n\r]\s*)\(/.test(rawCommand))
+		return uncertain("Cannot prove bash command stays in workspace: subshell");
+	if (/(?:^|[;&|\n\r]\s*)\{\s/.test(rawCommand))
+		return uncertain("Cannot prove bash command stays in workspace: brace group");
+	if (CONTROL_FLOW.test(rawCommand))
+		return uncertain("Cannot prove bash compound/control-flow command stays in workspace");
+	if (/<</.test(rawCommand)) return uncertain("Cannot prove bash command stays in workspace: here-document");
+	// Background `&` (not part of `&&`, and not a `>&` / `&>` / `&digit` redirection).
+	if (/(?<![>&])&(?!&|>|\d)/.test(rawCommand))
+		return uncertain("Cannot prove bash command stays in workspace: background job");
+
+	// STEP 3: segment split (INCLUDING newlines) + relocation scan.
+	const segments = rawCommand.split(/&&|\|\||[;|\n\r]+/);
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i]!.trim();
+		if (!seg) continue;
+		const tokens = seg.split(/\s+/);
+		const head = tokens[0]!;
+		if (RELOCATORS.has(head)) {
+			const target = tokens[1] ?? "";
+			const isLeadingCd = i === 0 && head === "cd" && !hasExplicitCwd;
+			if (isLeadingCd && isLiteralPath(target)) {
+				const resolved = realpathOrSelf(resolveTargetPath(target, root));
+				if (!isPathInside(resolved, realRoot)) {
+					return deny(`Refusing to run bash outside the workspace root: ${resolved}`);
+				}
+				effectiveCwd = resolved; // proven in-workspace relocation
+				continue;
+			}
+			// Non-leading, dynamic, or non-cd relocator. A non-leading literal cd
+			// that resolves outside is a proven escape; everything else is unprovable.
+			if (head === "cd" && isLiteralPath(target)) {
+				const resolved = realpathOrSelf(resolveTargetPath(target, root));
+				if (!isPathInside(resolved, realRoot)) {
+					return deny(`Refusing to run bash outside the workspace root: ${resolved}`);
+				}
+			}
+			return uncertain(`Cannot prove bash '${head}' keeps execution in the workspace`);
+		}
+		if (CHDIR_FLAG.test(seg)) {
+			return uncertain(`Cannot prove tool chdir flag in '${head}' stays in workspace`);
+		}
+	}
+
+	// STEP 4: proven-dangerous EFFECT → deny. A proven leading `cd X && …` is
+	// stripped (via the SAME helper BashTool uses, so the two can't drift) so the
+	// analyzer sees the remaining command in its effective cwd.
+	const commandForAnalysis = hasExplicitCwd ? rawCommand : extractLeadingCd(rawCommand).command;
+	const result = analyzeBashCommand(commandForAnalysis, effectiveCwd);
+	if (result) return deny(result.reason);
+	if (matchCriticalBashPattern(rawCommand)) return deny("Critical bash pattern detected.");
+
+	// STEP 5: proven safe.
+	return ALLOW;
+}
+
+/**
+ * Classify a tool call by tool name under prove-or-block semantics.
+ *
+ * - `bash`: `proveBashSafe` (see there) — allow only a flat in-workspace command
+ *   with no dangerous effect; uncertain for anything that relocates execution.
+ * - `eval`: dangerous-code in any cell → deny; otherwise allow.
+ * - `write` / `edit` / `ast_edit` / `tts`: every caller-supplied path proved
+ *   in-workspace → allow; a risky one → deny; NO path supplied → uncertain.
+ * - `lsp`: read-tier → allow; `request` allowed only for a frozen read-only
+ *   method set; write actions via the path rule.
+ * - `generate_image` / `report_tool_issue`: fixed write target, no caller path → allow.
+ * - any other write/exec-tier tool → uncertain (cannot introspect); read-tier → allow.
+ */
+export function classifyHeuristic(toolName: string, args: unknown, ctx: HeuristicContext): HeuristicVerdict {
 	const record = asRecord(args);
 	switch (toolName) {
 		case "bash": {
-			let command = typeof record.command === "string" ? record.command : "";
-			if (!command) return null;
-			// Keep the original command for the critical-pattern check below: the cd
-			// rewrite reassigns `command` to the post-`cd` remainder, but the bash
-			// tool's own `approval` gate matches patterns against the RAW command, so
-			// the heuristic must too — otherwise the two can disagree.
-			const rawCommand = command;
-			// The bash tool resolves the command relative to an optional `cwd` arg, so
-			// analysis MUST use that same cwd — otherwise `{ cwd: "/etc", command:
-			// "rm -rf ./nginx" }` looks workspace-local but runs in /etc.
-			let rawCwd = typeof record.cwd === "string" && record.cwd.length > 0 ? record.cwd : undefined;
-			// When there is no explicit cwd, the tool rewrites a leading `cd <path> &&
-			// ...` into the effective cwd (see `extractLeadingCd`), so mirror that here:
-			// use the extracted cd as the cwd and analyze the REMAINING command —
-			// otherwise `{ command: "cd /etc && touch x" }` looks workspace-local but
-			// runs in /etc. Explicit cwd takes precedence (matches the tool's `if (!cwd)`).
-			if (!rawCwd) {
-				const extracted = extractLeadingCd(command);
-				if (extracted.cd !== undefined) {
-					rawCwd = extracted.cd;
-					command = extracted.command;
-				}
-			}
-			let effectiveCwd = rawCwd ? resolveTargetPath(rawCwd, ctx.workspaceRoot) : ctx.workspaceRoot;
-			if (rawCwd) {
-				// Symlink-resolve before the containment check: a workspace symlink such
-				// as `out -> /etc` is lexically inside the workspace, but `BashTool`
-				// stats and runs in the real target, so a clean command would escape.
-				// The root is canonicalized too (e.g. macOS /tmp -> /private/tmp).
-				effectiveCwd = realpathOrSelf(effectiveCwd);
-				if (!isPathInside(effectiveCwd, realpathOrSelf(ctx.workspaceRoot))) {
-					return { block: true, reason: `Refusing to run bash outside the workspace root: ${effectiveCwd}` };
-				}
-			}
-			const result = analyzeBashCommand(command, effectiveCwd);
-			if (result) return { block: true, reason: result.reason };
-			// Also honor the bash tool's critical-pattern override: the tier engine
-			// always blocks these (override: true), so this mode must not let one
-			// through just because the vendored analyzer didn't flag it.
-			if (matchCriticalBashPattern(rawCommand)) {
-				return { block: true, reason: "Critical bash pattern detected." };
-			}
-			return null;
+			const command = typeof record.command === "string" ? record.command : "";
+			const rawCwd = typeof record.cwd === "string" && record.cwd.length > 0 ? record.cwd : undefined;
+			return proveBashSafe(command, rawCwd, ctx);
 		}
 		case "eval": {
 			const cells = Array.isArray(record.cells) ? record.cells : [];
 			for (const cell of cells) {
 				const code = asRecord(cell).code;
 				if (typeof code === "string" && containsDangerousCode(code)) {
-					return {
-						block: true,
-						reason: "Detected a potentially destructive command in eval cell code.",
-					};
+					return deny("Detected a potentially destructive command in eval cell code.");
 				}
 			}
-			return null;
+			return ALLOW;
 		}
 		case "write":
 		case "edit":
 			// `extractAllApprovalPaths` covers the plain `path` field AND every
-			// apply-patch / hashline section and rename destination.
-			return classifyFirstRiskyPath(extractAllApprovalPaths(args), ctx);
-		case "lsp":
-			// Only the caller-supplied `file` / `new_name` paths can escape; other
-			// write actions stay in-workspace via the language server, and read-tier
-			// lsp actions are not write escapes.
-			if (ctx.tier !== "write") return null;
-			return classifyFirstRiskyPath([...stringValues(record.file), ...stringValues(record.new_name)], ctx);
+			// apply-patch / hashline section and rename destination. An empty list
+			// (e.g. `write { path: "" }`) is uncertain, not allow.
+			return classifyPathsOrUncertain(extractAllApprovalPaths(args), ctx, toolName);
 		case "ast_edit":
-			return classifyFirstRiskyPath(stringValues(record.paths), ctx);
+			return classifyPathsOrUncertain(stringValues(record.paths), ctx, "ast_edit");
 		case "tts":
-			return classifyFirstRiskyPath(stringValues(record.output_path), ctx);
+			return classifyPathsOrUncertain(stringValues(record.output_path), ctx, "tts");
+		case "lsp": {
+			const action = typeof record.action === "string" ? record.action : "";
+			if (action === "request") {
+				const method = typeof record.query === "string" ? record.query : "";
+				return SAFE_LSP_REQUEST_METHODS.has(method)
+					? ALLOW
+					: uncertain(`lsp request method not provably safe: ${method || "(none)"}`);
+			}
+			if (ctx.tier !== "write") return ALLOW;
+			return classifyPathsOrUncertain(
+				[...stringValues(record.file), ...stringValues(record.new_name)],
+				ctx,
+				`lsp ${action || "write action"}`,
+			);
+		}
 		case "generate_image":
 		case "report_tool_issue":
-			// Write-tier, but the write target is fixed / allocated (no caller path
-			// to escape with), so there is nothing to classify.
-			return null;
+			// Write-tier, but the write target is fixed / tool-allocated with no
+			// caller-controlled path (`generate_image.input[].path` is a read source).
+			return ALLOW;
 		default:
-			// An unrecognized write- or exec-tier tool can't be introspected for
-			// safety, so fail safe by returning a block: `heuristic` mode (no judge)
-			// turns that into a deny, while `hybrid` escalates it to the Guardian.
-			// exec is included so a delegating tool like `task` — which launches yolo
-			// subagents — can't slip past the mode by allow-on-default; like
-			// `guardian` mode, no exec-tier call is silently allowed here.
-			// `read`-tier tools carry no write/exec risk and are allowed.
+			// An unrecognized write- or exec-tier tool cannot be introspected for
+			// safety, so it is uncertain — heuristic mode denies, hybrid escalates to
+			// the judge. This is why a future exec tool (or `task`, which spawns yolo
+			// subagents) cannot silently bypass the mode. Read-tier carries no risk.
 			return ctx.tier === "write" || ctx.tier === "exec"
-				? { block: true, reason: `Refusing un-vetted ${ctx.tier}-tier tool: ${toolName}` }
-				: null;
+				? uncertain(`Un-vetted ${ctx.tier}-tier tool: ${toolName}`)
+				: ALLOW;
 	}
 }

@@ -88,10 +88,17 @@ export async function evaluatePermission(input: EvaluatePermissionInput): Promis
 		return tier === EXEC_TIER ? runGuardian() : { action: "allow" };
 	}
 
-	const block = classifyHeuristic(tool.name, args, { workspaceRoot, tier });
+	// Prove-or-block: the heuristic returns a three-state verdict. Only a
+	// positively-proven-safe call is auto-allowed; both a proven-dangerous (`deny`)
+	// and an un-provable (`uncertain`) verdict are NOT allowed. `heuristic` mode has
+	// no judge so it denies; `hybrid` escalates the blocked call to the Guardian,
+	// which may overturn or confirm (the documented hybrid contract). The
+	// `deny`/`uncertain` distinction sharpens the reason string for both paths.
+	const verdict = classifyHeuristic(tool.name, args, { workspaceRoot, tier });
+	if (verdict.decision === "allow") return { action: "allow" };
 	if (mode === "heuristic") {
-		return block ? { action: "deny", reason: block.reason } : { action: "allow" };
+		return { action: "deny", reason: verdict.reason ?? `Blocked by safety heuristic for ${tool.name}.` };
 	}
-	// hybrid
-	return block ? runGuardian(block.reason) : { action: "allow" };
+	// hybrid: escalate the non-allowed call to the Guardian judge.
+	return runGuardian(verdict.reason);
 }
