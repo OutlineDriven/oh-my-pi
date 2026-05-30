@@ -1,4 +1,6 @@
-import { extractApprovalPath } from "../../edit/approval-path";
+import { extractAllApprovalPaths } from "../../edit/approval-path";
+import type { ToolTier } from "../approval";
+import { matchCriticalBashPattern } from "../critical-bash-patterns";
 import { isInternalUrlPath } from "../path-utils";
 import { classifyRiskyPath, isPathInside, resolveTargetPath } from "./risky-paths";
 import { analyzeBashCommand, containsDangerousCode } from "./safety-net/index";
@@ -12,6 +14,8 @@ export interface HeuristicBlock {
 /** Context required to evaluate path-based heuristics. */
 export interface HeuristicContext {
 	workspaceRoot: string;
+	/** Resolved tool tier; lets the classifier fail safe on unknown write-tier tools. */
+	tier?: ToolTier;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -23,12 +27,41 @@ function classifyFilePath(targetPath: string, ctx: HeuristicContext): HeuristicB
 	return classifyRiskyPath(targetPath, ctx.workspaceRoot);
 }
 
+/** Block on the first risky path among a list (e.g. every section of a patch). */
+function classifyFirstRiskyPath(paths: Iterable<string>, ctx: HeuristicContext): HeuristicBlock | null {
+	for (const p of paths) {
+		const block = classifyFilePath(p, ctx);
+		if (block) return block;
+	}
+	return null;
+}
+
+/** Normalize a path argument to a string list (a bare string or an array of strings). */
+function stringValues(value: unknown): string[] {
+	if (typeof value === "string") return [value];
+	if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string");
+	return [];
+}
+
 /**
- * Blacklist heuristic for tool calls, dispatched by tool tier:
- * - `bash`: the vendored command analyzer (destructive `rm`/`git`/`find`/…).
+ * Blacklist heuristic for tool calls, dispatched by tool name:
+ * - `bash`: the vendored command analyzer (destructive `rm`/`git`/`find`/…), plus
+ *   the bash tool's own critical-pattern override, so commands the analyzer misses
+ *   but the tier engine always blocks (e.g. `sudo rm`) are caught here too rather
+ *   than auto-approved by this mode.
  * - `eval`: interpreter dangerous-code detection over each cell's source.
- * - `write` / `edit`: risky-path rules (outside workspace or sensitive paths).
- * - everything else: allowed (returns `null`).
+ * - `write` / `edit`: risky-path rule on EVERY caller target — the plain `path`
+ *   plus every apply-patch / hashline section and `*** Move to:` rename
+ *   destination (an edit applies all sections, so a later escape must not hide
+ *   behind an in-workspace first section).
+ * - `lsp` / `ast_edit` / `tts`: risky-path rule on the caller-supplied write paths
+ *   (`lsp` `rename_file` resolves `new_name` against cwd and can escape; likewise
+ *   `ast_edit`'s `paths` and `tts`'s `output_path`).
+ * - `image_gen` / `report_tool_issue`: write-tier, but the write target is fixed /
+ *   allocated with no caller-controlled write path (`image_gen.input[].path` is a
+ *   read source), so there is nothing to escape with — allowed.
+ * - any OTHER write-tier tool: cannot be introspected for a write path, so fail
+ *   safe — block (which `hybrid` escalates to the judge). Non-write tiers allowed.
  *
  * Returns a block decision or `null` when the call is considered safe.
  */
@@ -47,7 +80,14 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 				return { block: true, reason: `Refusing to run bash outside the workspace root: ${effectiveCwd}` };
 			}
 			const result = analyzeBashCommand(command, effectiveCwd);
-			return result ? { block: true, reason: result.reason } : null;
+			if (result) return { block: true, reason: result.reason };
+			// Also honor the bash tool's critical-pattern override: the tier engine
+			// always blocks these (override: true), so this mode must not let one
+			// through just because the vendored analyzer didn't flag it.
+			if (matchCriticalBashPattern(command)) {
+				return { block: true, reason: "Critical bash pattern detected." };
+			}
+			return null;
 		}
 		case "eval": {
 			const cells = Array.isArray(record.cells) ? record.cells : [];
@@ -62,13 +102,32 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 			}
 			return null;
 		}
-		case "write": {
-			const targetPath = typeof record.path === "string" ? record.path : "";
-			return classifyFilePath(targetPath, ctx);
-		}
+		case "write":
 		case "edit":
-			return classifyFilePath(extractApprovalPath(args), ctx);
-		default:
+			// `extractAllApprovalPaths` covers the plain `path` field AND every
+			// apply-patch / hashline section and rename destination.
+			return classifyFirstRiskyPath(extractAllApprovalPaths(args), ctx);
+		case "lsp":
+			// Only the caller-supplied `file` / `new_name` paths can escape; other
+			// write actions stay in-workspace via the language server, and read-tier
+			// lsp actions are not write escapes.
+			if (ctx.tier !== "write") return null;
+			return classifyFirstRiskyPath([...stringValues(record.file), ...stringValues(record.new_name)], ctx);
+		case "ast_edit":
+			return classifyFirstRiskyPath(stringValues(record.paths), ctx);
+		case "tts":
+			return classifyFirstRiskyPath(stringValues(record.output_path), ctx);
+		case "image_gen":
+		case "report_tool_issue":
+			// Write-tier, but the write target is fixed / allocated (no caller path
+			// to escape with), so there is nothing to classify.
 			return null;
+		default:
+			// An unrecognized write-tier tool cannot be introspected for a write
+			// path, so fail safe: block (and `hybrid` escalates the block to the
+			// judge). Non-write tiers carry no write-escape risk and are allowed.
+			return ctx.tier === "write"
+				? { block: true, reason: `Refusing unrecognized write-tier tool: ${toolName}` }
+				: null;
 	}
 }
