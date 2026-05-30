@@ -2146,21 +2146,24 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 					): Model<Api> => {
 						const reference = resolveReference(defaults.id);
 						const copilotLimits = extractCopilotLimits(entry);
-						// Copilot exposes token limits under capabilities.limits.*.
-						// max_prompt_tokens is the prompt capacity (what OMP calls contextWindow).
-						// max_context_window_tokens is the total window (prompt + output budget)
-						// and must NOT be used for contextWindow — it inflates the limit and
-						// breaks compaction thresholds, overflow detection, and promotion.
-						// The OpenAI-compatible root-level `context_length` field mirrors the
-						// total window (e.g. 400k for gpt-5.4), so Copilot's max_prompt_tokens
-						// (the true prompt budget) must take precedence whenever it is present.
-						const contextWindowFallback = toPositiveNumber(
-							entry.context_length,
-							reference?.contextWindow ?? defaults.contextWindow,
-						);
+						// Copilot exposes per-model token limits under capabilities.limits.*.
+						// contextWindow := max_context_window_tokens — the model's true total
+						// window. This matches opencode's Copilot loader, which maps
+						// limit.context = max_context_window_tokens. The OpenAI-compatible
+						// root-level context_length mirrors the same total window and is the
+						// next fallback. max_prompt_tokens is Copilot's prompt/summarization
+						// budget (~128k on most models); it UNDER-reports the real window, so it
+						// is a last-resort fallback only — driving contextWindow from it is what
+						// previously locked every Copilot model to ~128k.
 						const contextWindow = toPositiveNumber(
-							copilotLimits.maxPromptTokens,
-							reference ? Math.min(contextWindowFallback, reference.contextWindow) : contextWindowFallback,
+							copilotLimits.maxContextWindowTokens,
+							toPositiveNumber(
+								entry.context_length,
+								toPositiveNumber(
+									copilotLimits.maxPromptTokens,
+									reference?.contextWindow ?? defaults.contextWindow,
+								),
+							),
 						);
 						const maxTokens = toPositiveNumber(
 							entry.max_completion_tokens,

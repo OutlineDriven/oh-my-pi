@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed GitHub Copilot OAuth model discovery locking every model to ~128k context. The dynamic `/models` mapper now derives `contextWindow` from `capabilities.limits.max_context_window_tokens` (the model's true total window) instead of `max_prompt_tokens` (Copilot's ~128k prompt/summarization budget), matching opencode's Copilot loader. Per-model windows (e.g. Gemini 2.5 Pro 1M, GPT-5.4 400k, Claude 200k) now surface correctly instead of being clamped to the prompt budget.
+
 ## [15.5.15] - 2026-05-30
 
 ### Added

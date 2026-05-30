@@ -84,7 +84,7 @@ describe("github copilot model limits mapping", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses capabilities.limits max_prompt_tokens as context window when context_length is absent", async () => {
+	it("uses capabilities.limits max_context_window_tokens as context window", async () => {
 		const { models, fetchMock } = await discoverCopilotModels({
 			data: [
 				{
@@ -103,12 +103,12 @@ describe("github copilot model limits mapping", () => {
 
 		const model = models.find(candidate => candidate.id === "gemini-2.5-pro");
 		expect(model).toBeDefined();
-		expect(model?.contextWindow).toBe(128_000);
+		expect(model?.contextWindow).toBe(1_048_576);
 		expect(model?.maxTokens).toBe(64_000);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("prefers explicit context_length/max_completion_tokens when max_prompt_tokens is absent", async () => {
+	it("prefers max_context_window_tokens over context_length for context window", async () => {
 		const { models } = await discoverCopilotModels({
 			data: [
 				{
@@ -129,7 +129,7 @@ describe("github copilot model limits mapping", () => {
 		const model = models.find(candidate => candidate.id === "gpt-5.2-codex");
 		expect(model).toBeDefined();
 		expect(model?.api).toBe("openai-responses");
-		expect(model?.contextWindow).toBe(250_000);
+		expect(model?.contextWindow).toBe(400_000);
 		expect(model?.maxTokens).toBe(120_000);
 	});
 
@@ -152,7 +152,7 @@ describe("github copilot model limits mapping", () => {
 
 		const model = models.find(candidate => candidate.id === "claude-opus-4.6");
 		expect(model).toBeDefined();
-		expect(model?.contextWindow).toBe(128_000);
+		expect(model?.contextWindow).toBe(200_000);
 		expect(model?.maxTokens).toBe(16_000);
 	});
 
@@ -197,9 +197,9 @@ describe("github copilot model limits mapping", () => {
 		expect(model).toBeDefined();
 		expect(model?.api).toBe("openai-responses");
 		expect(model?.reasoning).toBe(true);
-		// max_prompt_tokens is the true prompt budget; root-level context_length
-		// mirrors max_context_window_tokens (total window) and must not win.
-		expect(model?.contextWindow).toBe(272_000);
+		// max_context_window_tokens is the model's true total window and wins; the
+		// mirrored root context_length and max_prompt_tokens are only fallbacks.
+		expect(model?.contextWindow).toBe(400_000);
 		expect(model?.maxTokens).toBe(128_000);
 		expect(model?.premiumMultiplier).toBe(0.33);
 		expect(model?.thinking).toEqual({
@@ -209,7 +209,7 @@ describe("github copilot model limits mapping", () => {
 		});
 	});
 
-	it("does not use max_context_window_tokens for contextWindow", async () => {
+	it("uses max_context_window_tokens for contextWindow", async () => {
 		const { models } = await discoverCopilotModels({
 			data: [
 				{
@@ -227,10 +227,9 @@ describe("github copilot model limits mapping", () => {
 
 		const model = models.find(candidate => candidate.id === "gpt-5.4");
 		expect(model).toBeDefined();
-		// max_context_window_tokens is total window (prompt + output), not prompt capacity.
-		// Without max_prompt_tokens, contextWindow should fall back to bundled reference,
-		// NOT to max_context_window_tokens.
-		expect(model?.contextWindow).toBe(272_000);
+		// max_context_window_tokens is the model's true total window (opencode parity);
+		// it drives contextWindow even when max_prompt_tokens is absent.
+		expect(model?.contextWindow).toBe(400_000);
 		expect(model?.maxTokens).toBe(128_000);
 	});
 
