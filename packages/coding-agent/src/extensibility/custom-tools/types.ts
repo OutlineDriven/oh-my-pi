@@ -21,8 +21,8 @@ import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
-import type { TodoItem } from "../../tools/todo-write";
 import type { GuardianJudge } from "../../tools/permission/guardian";
+import type { TodoItem } from "../../tools/todo-write";
 
 /** Alias for clarity */
 export type CustomToolUIContext = HookUIContext;
