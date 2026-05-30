@@ -25,6 +25,7 @@ import { getSixelLineMask } from "../utils/sixel";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { applyBashFixups } from "./bash-command-fixup";
+import { extractLeadingCd } from "./bash-cwd";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
 import { checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
@@ -556,13 +557,13 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 
 		// Extract leading `cd <path> && ...` into cwd when the model ignores the cwd parameter.
-		// Constrained to a single line so a `&&` that sits on a later line of a multiline
-		// script can't pull the entire script into the "cwd" capture.
+		// `extractLeadingCd` is the single source of truth for this rewrite (shared with the
+		// permission heuristic) so the two can't drift apart.
 		if (!cwd) {
-			const cdMatch = command.match(/^cd[ \t]+((?:[^&\\\n\r]|\\.)+?)[ \t]*&&[ \t]*/);
-			if (cdMatch) {
-				cwd = cdMatch[1].trim().replace(/^["']|["']$/g, "");
-				command = command.slice(cdMatch[0].length);
+			const extracted = extractLeadingCd(command);
+			if (extracted.cd !== undefined) {
+				cwd = extracted.cd;
+				command = extracted.command;
 			}
 		}
 		if (asyncRequested && !this.#asyncEnabled) {

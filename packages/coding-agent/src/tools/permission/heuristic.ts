@@ -1,5 +1,6 @@
 import { extractAllApprovalPaths } from "../../edit/approval-path";
 import type { ToolTier } from "../approval";
+import { extractLeadingCd } from "../bash-cwd";
 import { matchCriticalBashPattern } from "../critical-bash-patterns";
 import { isInternalUrlPath } from "../path-utils";
 import { classifyRiskyPath, isPathInside, resolveTargetPath } from "./risky-paths";
@@ -69,12 +70,24 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 	const record = asRecord(args);
 	switch (toolName) {
 		case "bash": {
-			const command = typeof record.command === "string" ? record.command : "";
+			let command = typeof record.command === "string" ? record.command : "";
 			if (!command) return null;
 			// The bash tool resolves the command relative to an optional `cwd` arg, so
 			// analysis MUST use that same cwd — otherwise `{ cwd: "/etc", command:
 			// "rm -rf ./nginx" }` looks workspace-local but runs in /etc.
-			const rawCwd = typeof record.cwd === "string" && record.cwd.length > 0 ? record.cwd : undefined;
+			let rawCwd = typeof record.cwd === "string" && record.cwd.length > 0 ? record.cwd : undefined;
+			// When there is no explicit cwd, the tool rewrites a leading `cd <path> &&
+			// ...` into the effective cwd (see `extractLeadingCd`), so mirror that here:
+			// use the extracted cd as the cwd and analyze the REMAINING command —
+			// otherwise `{ command: "cd /etc && touch x" }` looks workspace-local but
+			// runs in /etc. Explicit cwd takes precedence (matches the tool's `if (!cwd)`).
+			if (!rawCwd) {
+				const extracted = extractLeadingCd(command);
+				if (extracted.cd !== undefined) {
+					rawCwd = extracted.cd;
+					command = extracted.command;
+				}
+			}
 			const effectiveCwd = rawCwd ? resolveTargetPath(rawCwd, ctx.workspaceRoot) : ctx.workspaceRoot;
 			if (rawCwd && !isPathInside(effectiveCwd, ctx.workspaceRoot)) {
 				return { block: true, reason: `Refusing to run bash outside the workspace root: ${effectiveCwd}` };

@@ -73,6 +73,31 @@ describe("classifyHeuristic", () => {
 		expect(classifyHeuristic("read", { path: "/etc/hosts" }, CTX)).toBeNull();
 		expect(classifyHeuristic("ssh", { command: "rm -rf /" }, CTX)).toBeNull();
 	});
+
+	it("blocks bash whose implicit leading `cd` escapes the workspace", () => {
+		// The bash tool rewrites a leading `cd <path> && ...` into the effective
+		// cwd when no explicit cwd arg is given, so analysis MUST honor it.
+		// `touch x` is benign to the vendored analyzer regardless of cwd, so this
+		// block isolates the new cd-extraction guard: it fires only because the
+		// leading `cd /etc` moves execution outside the workspace.
+		expect(classifyHeuristic("bash", { command: "cd /etc && touch x" }, CTX)?.block).toBe(true);
+		expect(classifyHeuristic("bash", { command: "cd ../.. && rm foo" }, CTX)?.block).toBe(true);
+	});
+
+	it("analyzes the remaining command after an in-workspace leading `cd`", () => {
+		// `src` is inside the workspace, and `ls` is benign there.
+		expect(classifyHeuristic("bash", { command: "cd src && ls" }, CTX)).toBeNull();
+		// Destructive remainder is still caught after the in-workspace cd.
+		expect(classifyHeuristic("bash", { command: "cd src && rm -rf /" }, CTX)?.block).toBe(true);
+	});
+
+	it("does not extract a leading `cd` when an explicit in-workspace cwd is given", () => {
+		// Explicit cwd takes precedence (matching the tool's `if (!cwd)`), so the
+		// leading `cd /etc` is NOT extracted and the command runs in the explicit
+		// in-workspace cwd. A benign remainder there is therefore allowed — proving
+		// the explicit-cwd path is unchanged.
+		expect(classifyHeuristic("bash", { command: "cd /etc && touch x", cwd: "src" }, CTX)).toBeNull();
+	});
 });
 
 describe("classifyHeuristic — multi-file edit", () => {
