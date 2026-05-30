@@ -70,6 +70,10 @@ export async function evaluatePermission(input: EvaluatePermissionInput): Promis
 	const userPolicy = Object.hasOwn(userPolicies, tool.name) ? normalizePolicy(userPolicies[tool.name]) : undefined;
 	if (userPolicy === "deny") return { action: "deny", reason: `Blocked by user policy for ${tool.name}.` };
 	if (userPolicy === "allow") return { action: "allow" };
+	// A `prompt` policy is authoritative too: it must ask, not fall through to the
+	// heuristic/guardian path (which could silently auto-allow the call).
+	if (userPolicy === "prompt")
+		return { action: "prompt", reason: `Confirmation required by user policy for ${tool.name}.` };
 
 	const runGuardian = async (reason?: string): Promise<PermissionAction> => {
 		if (!guardian) return failSafe(hasUI, reason);
@@ -79,12 +83,12 @@ export async function evaluatePermission(input: EvaluatePermissionInput): Promis
 		return failSafe(hasUI, reason);
 	};
 
+	const tier = getToolDecision(tool, args).tier;
 	if (mode === "guardian") {
-		const tier = getToolDecision(tool, args).tier;
 		return tier === EXEC_TIER ? runGuardian() : { action: "allow" };
 	}
 
-	const block = classifyHeuristic(tool.name, args, { workspaceRoot });
+	const block = classifyHeuristic(tool.name, args, { workspaceRoot, tier });
 	if (mode === "heuristic") {
 		return block ? { action: "deny", reason: block.reason } : { action: "allow" };
 	}

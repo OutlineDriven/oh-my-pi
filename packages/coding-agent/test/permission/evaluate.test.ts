@@ -7,6 +7,7 @@ const ROOT = "/home/user/project";
 
 const bashTool: ApprovalSubject = { name: "bash", approval: "exec", formatApprovalDetails: () => [] };
 const readTool: ApprovalSubject = { name: "read", approval: "read", formatApprovalDetails: () => [] };
+const lspTool: ApprovalSubject = { name: "lsp", approval: () => ({ tier: "write" }), formatApprovalDetails: () => [] };
 
 function fakeGuardian(verdict: GuardianVerdict) {
 	const guardian = {
@@ -58,6 +59,12 @@ describe("evaluatePermission — user policy precedence", () => {
 			expect(action).toEqual({ action: "allow" });
 			expect(guardian.calls).toBe(0);
 		});
+		it(`explicit prompt asks instead of auto-allowing in ${mode}`, async () => {
+			const guardian = fakeGuardian({ decision: "allow" });
+			const action = await run({ mode, userPolicies: { bash: "prompt" }, args: { command: "ls" }, guardian });
+			expect(action.action).toBe("prompt");
+			expect(guardian.calls).toBe(0);
+		});
 	}
 });
 
@@ -104,6 +111,18 @@ describe("evaluatePermission — hybrid", () => {
 			action: "deny",
 			reason: "confirmed",
 		});
+	});
+});
+
+describe("evaluatePermission — other write-tier tools", () => {
+	const renameArgs = { action: "rename_file", file: "a.ts", new_name: "../moved.ts" };
+	it("heuristic denies an lsp rename that escapes the workspace", async () => {
+		expect((await run({ tool: lspTool, args: renameArgs, mode: "heuristic" })).action).toBe("deny");
+	});
+	it("hybrid escalates the escaping lsp rename to the judge", async () => {
+		const guardian = fakeGuardian({ decision: "allow" });
+		expect(await run({ tool: lspTool, args: renameArgs, mode: "hybrid", guardian })).toEqual({ action: "allow" });
+		expect(guardian.calls).toBe(1);
 	});
 });
 
