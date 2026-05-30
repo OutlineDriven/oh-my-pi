@@ -60,6 +60,9 @@ describe("classifyHeuristic — bash provable-safe (allow)", () => {
 	it("analyzes the remainder after an in-workspace leading cd (benign)", () => {
 		expect(decide("bash", { command: "cd src && ls" })).toBe("allow");
 	});
+	it("allows exec, whose target arguments stay statically visible (not opaque re-entry)", () => {
+		expect(decide("bash", { command: "exec make build" })).toBe("allow");
+	});
 });
 
 describe("classifyHeuristic — bash proven dangerous / out-of-workspace (deny)", () => {
@@ -137,6 +140,13 @@ describe("classifyHeuristic — bash unprovable constructs (uncertain)", () => {
 	});
 	it("flags shell re-entry via an absolute interpreter path", () => {
 		expect(decide("bash", { command: '/bin/bash -c "rm x"' })).toBe("uncertain");
+	});
+	it("flags eval re-parsing an opaque string", () => {
+		expect(decide("bash", { command: 'eval "$CMD"' })).toBe("uncertain");
+	});
+	it("flags sourcing an un-inspectable script", () => {
+		expect(decide("bash", { command: "source ./env.sh && make" })).toBe("uncertain");
+		expect(decide("bash", { command: ". ./env.sh" })).toBe("uncertain");
 	});
 	it("flags a here-doc", () => {
 		expect(decide("bash", { command: "cat <<EOF\n...\nEOF" })).toBe("uncertain");

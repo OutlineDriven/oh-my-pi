@@ -72,13 +72,16 @@ const CONTROL_FLOW = /(?:^|[;&|\n\r({]\s*)(?:if|then|elif|else|fi|for|while|unti
 const CHDIR_FLAG = /(?:^|\s)(?:-C|--directory|--chdir|--working-directory)(?:[=\s]|$)/;
 
 /**
- * Shell re-entry: a nested interpreter (`bash -c`, `/bin/sh -c`) or `eval` /
- * `exec` / `source` / `.` re-parses a string this flat analyzer cannot inspect,
- * so the effective command is unknowable here → `uncertain`. (A re-entry that also
+ * Shell re-entry: a nested interpreter (`bash -c`, `/bin/sh -c`) or an `eval` /
+ * `source` / `.` builtin re-parses a string or file this flat analyzer cannot
+ * inspect, so the effective command is unknowable here → `uncertain`. `exec` is
+ * deliberately EXCLUDED: `exec cmd …` replaces the shell with a command whose
+ * arguments are still statically visible, so it is not opaque re-entry — flagging
+ * it would only deny ordinary `exec make`-style calls. (A re-entry that also
  * fetches and pipes to a shell is caught earlier by the terminal critical-pattern
  * check.)
  */
-const SHELL_REENTRY = /(?:^|[;&|\n\r(]\s*)(?:eval|exec|source|\.)\s/;
+const SHELL_REENTRY = /(?:^|[;&|\n\r(]\s*)(?:eval|source|\.)\s/;
 const SHELL_DASH_C = /(?:^|[;&|\n\r(]\s*)(?:\S*\/)?(?:bash|sh|zsh|dash|ash|ksh|fish)(?:\s+-\S+)*\s+-c\b/;
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -184,11 +187,14 @@ function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: H
 		if (RELOCATORS.has(head)) {
 			const target = tokens[1] ?? "";
 			// A literal `cd` in the FIRST segment runs unconditionally before anything
-			// else, so its destination is provable: outside the workspace → a proven
-			// escape (deny); inside → a proven relocation we keep analyzing from. Any
-			// other relocator — a `cd` behind a `&&`/`||`/`;` that may short-circuit, a
-			// dynamic target, or pushd/chroot/… — cannot be statically proven, so it is
-			// `uncertain` rather than a proven escape.
+			// else, so its destination is statically provable: outside the workspace →
+			// a proven escape (deny); inside → a proven relocation we keep analyzing
+			// from. Every OTHER relocator (a later-segment `cd`, a `pushd`/`chroot`, or
+			// a dynamic target) is `uncertain`: proving where a non-leading `cd` lands
+			// needs the effective cwd simulated across the intervening segments, and
+			// that multi-segment cwd tracking is exactly where the earlier bypasses
+			// hid. Failing safe is sound here — heuristic mode denies and hybrid
+			// escalates to the judge, so a punted `cd` is never weaker than a deny.
 			if (i === 0 && head === "cd" && isLiteralPath(target)) {
 				const resolved = realpathOrSelf(resolveTargetPath(target, root));
 				if (!isPathInside(resolved, realRoot)) {
