@@ -133,17 +133,28 @@ const REDIRECTION_PREFIX = /^(?:[0-9]*|&)?(?:>>|>|<)/;
 /**
  * Extract the filesystem-path candidate from a single shell token, or `null` when
  * the token is a bare word / operator that names no path. Strips a glued
- * redirection operator, a leading `--opt=` (so `--out=/etc/x` is seen), and
- * surrounding quotes. Only tokens carrying a `/` separator or a `~` home prefix
- * are returned — a bare word resolves under the cwd and is no escape risk.
+ * redirection operator and surrounding quotes. For an OPTION token (`-o=/x`,
+ * `--out=/x`) the value after the first `=` is taken; a plain argument is kept
+ * whole so a path that legitimately contains `=` (`/etc/a=b`) is not truncated.
+ * Only tokens carrying a `/` separator or a `~` home prefix are returned — a bare
+ * word resolves under the cwd and is no escape risk.
  */
 function bashPathArgument(token: string): string | null {
-	let t = token.replace(REDIRECTION_PREFIX, "");
-	const eq = t.lastIndexOf("=");
-	if (eq !== -1) t = t.slice(eq + 1);
-	t = t.replace(/^["']|["']$/g, "");
+	// Unquote FIRST so a fully-quoted option (`"--out=/etc/x"`) is recognized as
+	// an option, not mistaken for a bare argument.
+	let t = unquote(token.replace(REDIRECTION_PREFIX, ""));
+	if (t.startsWith("-")) {
+		const eq = t.indexOf("=");
+		if (eq === -1) return null; // a bare `-flag` names no path
+		t = unquote(t.slice(eq + 1)); // option value may itself be quoted (`--out="/x"`)
+	}
 	if (!t) return null;
 	return t.includes("/") || t.startsWith("~") ? t : null;
+}
+
+/** Strip a single leading and/or trailing quote (best-effort; not full shell unquoting). */
+function unquote(s: string): string {
+	return s.replace(/^["']|["']$/g, "");
 }
 
 /**

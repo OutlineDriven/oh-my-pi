@@ -184,6 +184,29 @@ describe("classifyHeuristic — bash path arguments outside the workspace (uncer
 	it("allows a relative in-workspace path argument", () => {
 		expect(decide("bash", { command: "cat ./src/index.ts" })).toBe("allow");
 	});
+
+	// Adversarial: violate the assumptions baked into bashPathArgument's token parsing.
+	it("does not lose an escaping path that contains '=' (touch /etc/a=b)", () => {
+		expect(decide("bash", { command: "touch /etc/a=b" })).toBe("uncertain");
+	});
+	it("flags an escaping path passed as --opt=PATH", () => {
+		expect(decide("bash", { command: "tar --file=/etc/omp.tar ." })).toBe("uncertain");
+	});
+	it("flags an append redirection target outside the workspace", () => {
+		expect(decide("bash", { command: "echo x >>/etc/omp-test" })).toBe("uncertain");
+	});
+	it("flags an fd-numbered redirection target outside the workspace", () => {
+		expect(decide("bash", { command: "prog 2>/etc/omp-test" })).toBe("uncertain");
+	});
+	it("allows an in-workspace path that contains '=' (touch src/a=b)", () => {
+		expect(decide("bash", { command: "touch src/a=b" })).toBe("allow");
+	});
+	it("flags a fully-quoted escaping option token", () => {
+		expect(decide("bash", { command: 'tar "--file=/etc/omp.tar" .' })).toBe("uncertain");
+	});
+	it("flags an option whose quoted value escapes the workspace", () => {
+		expect(decide("bash", { command: 'tar --file="/etc/omp.tar" .' })).toBe("uncertain");
+	});
 });
 
 describe("classifyHeuristic — eval", () => {
