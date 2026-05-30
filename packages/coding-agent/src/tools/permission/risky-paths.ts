@@ -64,7 +64,7 @@ function classifyResolvedPath(resolved: string, root: string, home: string): Ris
 }
 
 /** Best-effort realpath of an existing path; returns the input unchanged on failure. */
-function realpathOrSelf(p: string): string {
+export function realpathOrSelf(p: string): string {
 	try {
 		return fs.realpathSync.native(p);
 	} catch {

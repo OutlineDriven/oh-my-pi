@@ -3,7 +3,7 @@ import type { ToolTier } from "../approval";
 import { extractLeadingCd } from "../bash-cwd";
 import { matchCriticalBashPattern } from "../critical-bash-patterns";
 import { isInternalUrlPath } from "../path-utils";
-import { classifyRiskyPath, isPathInside, resolveTargetPath } from "./risky-paths";
+import { classifyRiskyPath, isPathInside, realpathOrSelf, resolveTargetPath } from "./risky-paths";
 import { analyzeBashCommand, containsDangerousCode } from "./safety-net/index";
 
 /** A heuristic block decision with a human-readable reason. */
@@ -58,9 +58,10 @@ function stringValues(value: unknown): string[] {
  * - `lsp` / `ast_edit` / `tts`: risky-path rule on the caller-supplied write paths
  *   (`lsp` `rename_file` resolves `new_name` against cwd and can escape; likewise
  *   `ast_edit`'s `paths` and `tts`'s `output_path`).
- * - `image_gen` / `report_tool_issue`: write-tier, but the write target is fixed /
- *   allocated with no caller-controlled write path (`image_gen.input[].path` is a
- *   read source), so there is nothing to escape with — allowed.
+ * - `generate_image` / `report_tool_issue`: write-tier, but the write target is
+ *   fixed / allocated with no caller-controlled write path
+ *   (`generate_image.input[].path` is a read source), so nothing to escape with —
+ *   allowed.
  * - any OTHER write-tier tool: cannot be introspected for a write path, so fail
  *   safe — block (which `hybrid` escalates to the judge). Non-write tiers allowed.
  *
@@ -72,6 +73,11 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 		case "bash": {
 			let command = typeof record.command === "string" ? record.command : "";
 			if (!command) return null;
+			// Keep the original command for the critical-pattern check below: the cd
+			// rewrite reassigns `command` to the post-`cd` remainder, but the bash
+			// tool's own `approval` gate matches patterns against the RAW command, so
+			// the heuristic must too — otherwise the two can disagree.
+			const rawCommand = command;
 			// The bash tool resolves the command relative to an optional `cwd` arg, so
 			// analysis MUST use that same cwd — otherwise `{ cwd: "/etc", command:
 			// "rm -rf ./nginx" }` looks workspace-local but runs in /etc.
@@ -88,16 +94,23 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 					command = extracted.command;
 				}
 			}
-			const effectiveCwd = rawCwd ? resolveTargetPath(rawCwd, ctx.workspaceRoot) : ctx.workspaceRoot;
-			if (rawCwd && !isPathInside(effectiveCwd, ctx.workspaceRoot)) {
-				return { block: true, reason: `Refusing to run bash outside the workspace root: ${effectiveCwd}` };
+			let effectiveCwd = rawCwd ? resolveTargetPath(rawCwd, ctx.workspaceRoot) : ctx.workspaceRoot;
+			if (rawCwd) {
+				// Symlink-resolve before the containment check: a workspace symlink such
+				// as `out -> /etc` is lexically inside the workspace, but `BashTool`
+				// stats and runs in the real target, so a clean command would escape.
+				// The root is canonicalized too (e.g. macOS /tmp -> /private/tmp).
+				effectiveCwd = realpathOrSelf(effectiveCwd);
+				if (!isPathInside(effectiveCwd, realpathOrSelf(ctx.workspaceRoot))) {
+					return { block: true, reason: `Refusing to run bash outside the workspace root: ${effectiveCwd}` };
+				}
 			}
 			const result = analyzeBashCommand(command, effectiveCwd);
 			if (result) return { block: true, reason: result.reason };
 			// Also honor the bash tool's critical-pattern override: the tier engine
 			// always blocks these (override: true), so this mode must not let one
 			// through just because the vendored analyzer didn't flag it.
-			if (matchCriticalBashPattern(command)) {
+			if (matchCriticalBashPattern(rawCommand)) {
 				return { block: true, reason: "Critical bash pattern detected." };
 			}
 			return null;
@@ -130,7 +143,7 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 			return classifyFirstRiskyPath(stringValues(record.paths), ctx);
 		case "tts":
 			return classifyFirstRiskyPath(stringValues(record.output_path), ctx);
-		case "image_gen":
+		case "generate_image":
 		case "report_tool_issue":
 			// Write-tier, but the write target is fixed / allocated (no caller path
 			// to escape with), so there is nothing to classify.
