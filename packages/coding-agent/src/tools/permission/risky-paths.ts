@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -33,20 +34,10 @@ export function isPathInside(child: string, parent: string): boolean {
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-/**
- * Classify a write/edit target path as risky.
- *
- * A path is risky when it is outside the workspace root, or when it matches a
- * sensitive denylist (`.ssh`, `.env*`, `.git` internals, system roots, or a
- * dotfile directly under the user's home directory). Returns `null` for
- * ordinary in-workspace paths.
- */
-export function classifyRiskyPath(targetPath: string, workspaceRoot: string): RiskyPathBlock | null {
-	const resolved = resolveTargetPath(targetPath, workspaceRoot);
-	const root = path.resolve(workspaceRoot);
+/** Apply the sensitive-path / containment denylist to an absolute, normalized path. */
+function classifyResolvedPath(resolved: string, root: string, home: string): RiskyPathBlock | null {
 	const segments = resolved.split(path.sep).filter(Boolean);
 	const base = path.basename(resolved);
-	const home = os.homedir();
 
 	if (segments.includes(".ssh")) {
 		return { block: true, reason: `Refusing to modify SSH path: ${resolved}` };
@@ -70,4 +61,91 @@ export function classifyRiskyPath(targetPath: string, workspaceRoot: string): Ri
 		return { block: true, reason: `Path is outside the workspace root: ${resolved}` };
 	}
 	return null;
+}
+
+/** Best-effort realpath of an existing path; returns the input unchanged on failure. */
+function realpathOrSelf(p: string): string {
+	try {
+		return fs.realpathSync.native(p);
+	} catch {
+		return p;
+	}
+}
+
+/** Bound on symlink hops while resolving a write target (matches the kernel's ELOOP guard intent). */
+const MAX_SYMLINK_HOPS = 40;
+
+/**
+ * Best-effort resolution of where a write to `target` would actually land,
+ * following symlinks on every component — including *dangling* symlinks (writing
+ * through `link -> /etc/x` creates `/etc/x` even when it doesn't exist yet). Each
+ * iteration realpaths the longest existing ancestor; if the first non-existing
+ * tail element is itself a symlink, it is expanded and resolution restarts on the
+ * rewritten path, so multi-hop chains (`a -> b/x`, `b -> /etc`) collapse to their
+ * real destination. Bounded by `MAX_SYMLINK_HOPS`. Returns the best path reached.
+ */
+function resolveWritePath(target: string): string {
+	let current = target;
+	for (let hop = 0; hop < MAX_SYMLINK_HOPS; hop++) {
+		const tail: string[] = [];
+		let cur = current;
+		let realPrefix: string | undefined;
+		for (;;) {
+			try {
+				realPrefix = fs.realpathSync.native(cur);
+				break;
+			} catch {
+				const parent = path.dirname(cur);
+				if (parent === cur) break; // nothing on this path exists
+				tail.unshift(path.basename(cur));
+				cur = parent;
+			}
+		}
+		if (realPrefix === undefined) return current; // fully non-existing path; lexical result stands
+		if (tail.length === 0) return realPrefix; // whole path existed and was canonicalized
+
+		// The first non-existing tail element may be a dangling symlink. A write
+		// would follow it, so expand one hop and re-resolve the rewritten path.
+		const leaf = path.join(realPrefix, tail[0]!);
+		let expanded = false;
+		try {
+			if (fs.lstatSync(leaf).isSymbolicLink()) {
+				const link = fs.readlinkSync(leaf);
+				const linkTarget = path.isAbsolute(link) ? link : path.join(realPrefix, link);
+				current = path.normalize(path.join(linkTarget, ...tail.slice(1)));
+				expanded = true;
+			}
+		} catch {
+			// Not a symlink (or vanished mid-check): treat as a plain non-existing path.
+		}
+		if (!expanded) return path.normalize(path.join(realPrefix, ...tail));
+	}
+	return current; // hop budget exhausted (symlink loop); caller still classifies it
+}
+
+/**
+ * Classify a write/edit target path as risky.
+ *
+ * A path is risky when it is outside the workspace root, or when it matches a
+ * sensitive denylist (`.ssh`, `.env*`, `.git` internals, system roots, or a
+ * dotfile directly under the user's home directory). The check runs on both the
+ * lexically-resolved path AND its symlink-resolved real target (compared against
+ * the canonicalized root), so a workspace symlink pointing outside or at a
+ * sensitive path cannot bypass the guard — the write/edit fs APIs follow the same
+ * symlinks. Returns `null` for ordinary in-workspace paths.
+ */
+export function classifyRiskyPath(targetPath: string, workspaceRoot: string): RiskyPathBlock | null {
+	const resolved = resolveTargetPath(targetPath, workspaceRoot);
+	const root = path.resolve(workspaceRoot);
+	const home = os.homedir();
+
+	const lexical = classifyResolvedPath(resolved, root, home);
+	if (lexical) return lexical;
+
+	// Re-check after following symlinks. The root is canonicalized too, so a
+	// workspace that itself lives under a symlink (e.g. macOS /tmp -> /private/tmp)
+	// doesn't make legitimate in-workspace writes look like escapes.
+	const real = resolveWritePath(resolved);
+	if (real === resolved) return null;
+	return classifyResolvedPath(real, realpathOrSelf(root), home);
 }
