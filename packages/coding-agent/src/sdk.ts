@@ -1482,7 +1482,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			void extensionRunner.emitCredentialDisabled(event);
 		}
 
-		const guardianJudge = new GuardianJudge(modelRegistry, settings, () => agent.state.model);
+		const guardianJudge = new GuardianJudge(modelRegistry, settings, () => agent.state.model, providerSessionId);
 		const getSessionContext = () => ({
 			sessionManager,
 			modelRegistry,
