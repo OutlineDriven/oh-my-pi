@@ -88,17 +88,23 @@ export async function evaluatePermission(input: EvaluatePermissionInput): Promis
 		return tier === EXEC_TIER ? runGuardian() : { action: "allow" };
 	}
 
-	// Prove-or-block: the heuristic returns a three-state verdict. Only a
-	// positively-proven-safe call is auto-allowed; both a proven-dangerous (`deny`)
-	// and an un-provable (`uncertain`) verdict are NOT allowed. `heuristic` mode has
-	// no judge so it denies; `hybrid` escalates the blocked call to the Guardian,
-	// which may overturn or confirm (the documented hybrid contract). The
-	// `deny`/`uncertain` distinction sharpens the reason string for both paths.
+	// Prove-or-block: the heuristic returns a three-state verdict.
+	// - `allow`: positively proven workspace-safe → allow.
+	// - `deny`: proven dangerous / proven out-of-workspace → hard-deny in BOTH
+	//   modes. A proven `rm -rf /` or an escaping path is TERMINAL; the Guardian is
+	//   not consulted (a judge must never be argued into overturning a certain block).
+	// - `uncertain`: cannot be proven safe → fail safe. `heuristic` has no judge, so
+	//   it denies; `hybrid` escalates ONLY the uncertain call to the Guardian, which
+	//   may overturn or confirm (the documented hybrid contract).
 	const verdict = classifyHeuristic(tool.name, args, { workspaceRoot, tier });
 	if (verdict.decision === "allow") return { action: "allow" };
-	if (mode === "heuristic") {
+	if (verdict.decision === "deny") {
 		return { action: "deny", reason: verdict.reason ?? `Blocked by safety heuristic for ${tool.name}.` };
 	}
-	// hybrid: escalate the non-allowed call to the Guardian judge.
+	// uncertain
+	if (mode === "heuristic") {
+		return { action: "deny", reason: verdict.reason ?? `Refusing un-provable call for ${tool.name}.` };
+	}
+	// hybrid: escalate only the uncertain call to the Guardian judge.
 	return runGuardian(verdict.reason);
 }

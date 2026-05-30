@@ -71,6 +71,16 @@ const CONTROL_FLOW = /(?:^|[;&|\n\r({]\s*)(?:if|then|elif|else|fi|for|while|unti
 /** A `-C` / `--directory` style chdir flag on any tool (git, make, tar, env, rsync, …). */
 const CHDIR_FLAG = /(?:^|\s)(?:-C|--directory|--chdir|--working-directory)(?:[=\s]|$)/;
 
+/**
+ * Shell re-entry: a nested interpreter (`bash -c`, `/bin/sh -c`) or `eval` /
+ * `exec` / `source` / `.` re-parses a string this flat analyzer cannot inspect,
+ * so the effective command is unknowable here → `uncertain`. (A re-entry that also
+ * fetches and pipes to a shell is caught earlier by the terminal critical-pattern
+ * check.)
+ */
+const SHELL_REENTRY = /(?:^|[;&|\n\r(]\s*)(?:eval|exec|source|\.)\s/;
+const SHELL_DASH_C = /(?:^|[;&|\n\r(]\s*)(?:\S*\/)?(?:bash|sh|zsh|dash|ash|ksh|fish)(?:\s+-\S+)*\s+-c\b/;
+
 function asRecord(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
@@ -124,6 +134,13 @@ function isLiteralPath(target: string): boolean {
  */
 function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: HeuristicContext): HeuristicVerdict {
 	if (rawCommand.trim() === "") return ALLOW;
+
+	// STEP 0: a safety-critical pattern (rm -rf /, fork bomb, curl|bash, mkfs, …) is
+	// never legitimate and is cwd-independent, so it is a TERMINAL deny — it must win
+	// over the STEP-2/3 "uncertain" gates (e.g. a fork bomb's background `&` and
+	// braces would otherwise mask it as merely un-provable).
+	if (matchCriticalBashPattern(rawCommand)) return deny("Critical bash pattern detected.");
+
 	const root = ctx.workspaceRoot;
 	const realRoot = realpathOrSelf(root);
 
@@ -154,6 +171,8 @@ function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: H
 	// Background `&` (not part of `&&`, and not a `>&` / `&>` / `&digit` redirection).
 	if (/(?<![>&])&(?!&|>|\d)/.test(rawCommand))
 		return uncertain("Cannot prove bash command stays in workspace: background job");
+	if (SHELL_REENTRY.test(rawCommand) || SHELL_DASH_C.test(rawCommand))
+		return uncertain("Cannot prove bash command stays in workspace: nested shell re-entry");
 
 	// STEP 3: segment split (INCLUDING newlines) + relocation scan.
 	const segments = rawCommand.split(/&&|\|\||[;|\n\r]+/);
@@ -164,22 +183,19 @@ function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: H
 		const head = tokens[0]!;
 		if (RELOCATORS.has(head)) {
 			const target = tokens[1] ?? "";
-			const isLeadingCd = i === 0 && head === "cd" && !hasExplicitCwd;
-			if (isLeadingCd && isLiteralPath(target)) {
+			// A literal `cd` in the FIRST segment runs unconditionally before anything
+			// else, so its destination is provable: outside the workspace → a proven
+			// escape (deny); inside → a proven relocation we keep analyzing from. Any
+			// other relocator — a `cd` behind a `&&`/`||`/`;` that may short-circuit, a
+			// dynamic target, or pushd/chroot/… — cannot be statically proven, so it is
+			// `uncertain` rather than a proven escape.
+			if (i === 0 && head === "cd" && isLiteralPath(target)) {
 				const resolved = realpathOrSelf(resolveTargetPath(target, root));
 				if (!isPathInside(resolved, realRoot)) {
 					return deny(`Refusing to run bash outside the workspace root: ${resolved}`);
 				}
-				effectiveCwd = resolved; // proven in-workspace relocation
+				if (!hasExplicitCwd) effectiveCwd = resolved; // proven in-workspace relocation
 				continue;
-			}
-			// Non-leading, dynamic, or non-cd relocator. A non-leading literal cd
-			// that resolves outside is a proven escape; everything else is unprovable.
-			if (head === "cd" && isLiteralPath(target)) {
-				const resolved = realpathOrSelf(resolveTargetPath(target, root));
-				if (!isPathInside(resolved, realRoot)) {
-					return deny(`Refusing to run bash outside the workspace root: ${resolved}`);
-				}
 			}
 			return uncertain(`Cannot prove bash '${head}' keeps execution in the workspace`);
 		}
@@ -188,13 +204,13 @@ function proveBashSafe(rawCommand: string, rawCwdArg: string | undefined, ctx: H
 		}
 	}
 
-	// STEP 4: proven-dangerous EFFECT → deny. A proven leading `cd X && …` is
-	// stripped (via the SAME helper BashTool uses, so the two can't drift) so the
-	// analyzer sees the remaining command in its effective cwd.
+	// STEP 4: proven-dangerous EFFECT (cwd-sensitive) → deny. A proven leading
+	// `cd X && …` is stripped (via the SAME helper BashTool uses, so the two can't
+	// drift) so the analyzer sees the remaining command in its effective cwd. The
+	// cwd-independent critical patterns were already handled terminally in STEP 0.
 	const commandForAnalysis = hasExplicitCwd ? rawCommand : extractLeadingCd(rawCommand).command;
 	const result = analyzeBashCommand(commandForAnalysis, effectiveCwd);
 	if (result) return deny(result.reason);
-	if (matchCriticalBashPattern(rawCommand)) return deny("Critical bash pattern detected.");
 
 	// STEP 5: proven safe.
 	return ALLOW;
