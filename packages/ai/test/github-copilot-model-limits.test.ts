@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { resolveProviderModels } from "../src/model-manager";
 import { Effort } from "../src/model-thinking";
 import { getBundledModel } from "../src/models";
 import { githubCopilotModelManagerOptions } from "../src/provider-models/openai-compat";
@@ -250,5 +254,47 @@ describe("github copilot model limits mapping", () => {
 		// Should use the Copilot-specific bundled reference (272k after models.json fix),
 		// not the OpenAI global reference (1050k).
 		expect(model?.contextWindow).toBe(272_000);
+	});
+
+	it("preserves the discovered window through full resolution for a generated-policy id", async () => {
+		// gpt-5.4 is one of the ids in COPILOT_GENERATED_LIMITS, so its bundled window
+		// is the stale generated-policy value (272k). Drive the FULL resolveProviderModels
+		// merge (static bundle + live discovery) to prove the generated policy does NOT
+		// run at runtime: the discovered 400k window must survive to callers rather than
+		// being reset to the bundled 272k. Regression guard for the PR #1536 review thread.
+		const bundled = getBundledModel("github-copilot", "gpt-5.4");
+		expect(bundled?.contextWindow).toBe(272_000);
+
+		const fetchMock = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "gpt-5.4",
+								name: "GPT-5.4",
+								capabilities: { limits: { max_context_window_tokens: 400_000, max_output_tokens: 128_000 } },
+							},
+						],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				),
+		);
+		global.fetch = fetchMock as unknown as typeof fetch;
+
+		const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "copilot-merge-"));
+		try {
+			const options = githubCopilotModelManagerOptions({ apiKey: "copilot-test-key" });
+			const result = await resolveProviderModels(
+				{ ...options, cacheDbPath: path.join(cacheDir, "models.db") },
+				"online",
+			);
+			const resolved = result.models.find(model => model.id === "gpt-5.4");
+			expect(resolved).toBeDefined();
+			// Discovery (400k) overrides the stale bundled generated-policy window (272k).
+			expect(resolved?.contextWindow).toBe(400_000);
+		} finally {
+			await fs.rm(cacheDir, { recursive: true, force: true });
+		}
 	});
 });
