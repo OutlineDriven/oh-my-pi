@@ -67,7 +67,9 @@ describe("classifyHeuristic", () => {
 		expect(classifyHeuristic("edit", args, CTX)).toBeNull();
 	});
 
-	it("allows unknown read/exec tools", () => {
+	it("allows unknown tools when no tier is resolved (legacy callers)", () => {
+		// Without a resolved tier the classifier can't gate generically; the
+		// orchestrator always supplies one (see the tier-aware cases below).
 		expect(classifyHeuristic("read", { path: "/etc/hosts" }, CTX)).toBeNull();
 		expect(classifyHeuristic("ssh", { command: "rm -rf /" }, CTX)).toBeNull();
 	});
@@ -127,7 +129,14 @@ describe("classifyHeuristic — other write-tier tools", () => {
 		expect(classifyHeuristic("mystery_writer", { foo: 1 }, W("write"))?.block).toBe(true);
 	});
 
-	it("allows an unrecognized non-write tool", () => {
+	it("gates an unhandled exec-tier tool (e.g. ssh)", () => {
+		// exec-tier tools that aren't explicitly handled (ssh, browser, task, …)
+		// must not slip past heuristic/hybrid; heuristic denies, hybrid escalates.
+		expect(classifyHeuristic("ssh", { command: "echo hi" }, W("exec"))?.block).toBe(true);
+		expect(classifyHeuristic("task", { prompt: "do work" }, W("exec"))?.block).toBe(true);
+	});
+
+	it("allows an unrecognized read-tier tool", () => {
 		expect(classifyHeuristic("mystery_reader", { whatever: "../../x" }, W("read"))).toBeNull();
 	});
 });

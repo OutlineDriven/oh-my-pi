@@ -1837,7 +1837,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			label: "Tool Approval",
 			description:
-				"Default approval behaviour for tool calls. Tier modes ('Always ask', 'Write', 'Yolo') gate by tool tier. 'Heuristic' blocks destructive commands and risky paths via a blacklist. 'Guardian' asks an LLM safety judge to review exec-tier calls. 'Hybrid' runs the heuristic first and escalates only blocked calls to the Guardian. User policy may still prompt or block in every mode.",
+				"Default approval behaviour for tool calls. Tier modes ('Always ask', 'Write', 'Yolo') gate by tool tier. 'Heuristic' blocks destructive commands and risky paths via a blacklist and denies un-vetted exec/write-tier tools. 'Guardian' asks an LLM safety judge to review exec-tier calls. 'Hybrid' runs the heuristic first and escalates only blocked calls to the Guardian. User policy may still prompt or block in every mode.",
 			options: [
 				{
 					value: "yolo",
@@ -1860,7 +1860,7 @@ export const SETTINGS_SCHEMA = {
 					value: "heuristic",
 					label: "Heuristic",
 					description:
-						"Block destructive commands (rm -rf, force-push, …), dangerous interpreter one-liners, and writes/edits outside the workspace or to sensitive paths; allow everything else.",
+						"Block destructive commands (rm -rf, force-push, …), dangerous interpreter one-liners, and writes/edits outside the workspace or to sensitive paths. Un-vetted exec/write-tier tools (e.g. ssh, task) are denied so they can't bypass the mode — add a `tools.approval.<tool>: allow` entry to permit one. Read-tier and inspected-safe calls are allowed.",
 				},
 				{
 					value: "guardian",

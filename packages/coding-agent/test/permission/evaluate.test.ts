@@ -8,6 +8,9 @@ const ROOT = "/home/user/project";
 const bashTool: ApprovalSubject = { name: "bash", approval: "exec", formatApprovalDetails: () => [] };
 const readTool: ApprovalSubject = { name: "read", approval: "read", formatApprovalDetails: () => [] };
 const lspTool: ApprovalSubject = { name: "lsp", approval: () => ({ tier: "write" }), formatApprovalDetails: () => [] };
+// An exec-tier tool the heuristic does NOT special-case (like `ssh`/`task`); it must
+// not slip through on allow-by-default in the non-tier modes.
+const sshTool: ApprovalSubject = { name: "ssh", approval: "exec", formatApprovalDetails: () => [] };
 
 function fakeGuardian(verdict: GuardianVerdict) {
 	const guardian = {

@@ -123,11 +123,15 @@ export function classifyHeuristic(toolName: string, args: unknown, ctx: Heuristi
 			// to escape with), so there is nothing to classify.
 			return null;
 		default:
-			// An unrecognized write-tier tool cannot be introspected for a write
-			// path, so fail safe: block (and `hybrid` escalates the block to the
-			// judge). Non-write tiers carry no write-escape risk and are allowed.
-			return ctx.tier === "write"
-				? { block: true, reason: `Refusing unrecognized write-tier tool: ${toolName}` }
+			// An unrecognized write- or exec-tier tool can't be introspected for
+			// safety, so fail safe by returning a block: `heuristic` mode (no judge)
+			// turns that into a deny, while `hybrid` escalates it to the Guardian.
+			// exec is included so a delegating tool like `task` — which launches yolo
+			// subagents — can't slip past the mode by allow-on-default; like
+			// `guardian` mode, no exec-tier call is silently allowed here.
+			// `read`-tier tools carry no write/exec risk and are allowed.
+			return ctx.tier === "write" || ctx.tier === "exec"
+				? { block: true, reason: `Refusing un-vetted ${ctx.tier}-tier tool: ${toolName}` }
 				: null;
 	}
 }
