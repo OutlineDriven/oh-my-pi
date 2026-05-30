@@ -7,6 +7,37 @@
 - Added three tool-permission modes selectable via `tools.approvalMode` or `--approval-mode`: `heuristic` (a blacklist that blocks destructive commands, dangerous interpreter one-liners, and writes/edits outside the workspace or to sensitive paths), `guardian` (an ephemeral LLM safety judge that reviews exec-tier tool calls and returns allow/deny), and `hybrid` (runs the heuristic first and escalates only blocked calls to the Guardian). The existing `yolo`/`always-ask`/`write` tier modes are unchanged and `yolo` remains the default. Explicit `tools.approval.<tool>` policies stay authoritative in every mode.
 - Added the `tools.guardian.model` setting (defaults to a fast model) and `tools.guardian.maxRetries` (default 3) to configure the Guardian safety judge; the judge retries transient failures with exponential backoff and then fails safe (prompts when a UI exists, otherwise denies).
 - Vendored the `cc-safety-net` command analyzer (MIT, [kenryu42/claude-code-safety-net](https://github.com/kenryu42/claude-code-safety-net)) under `tools/permission/safety-net` to power the heuristic blacklist.
+## [15.5.15] - 2026-05-30
+### Changed
+
+- Enabled the agent loop's tool-call batch cap for Anthropic Claude sessions, cutting oversized streamed tool-use bursts into runnable batches before continuing the conversation.
+
+### Removed
+
+- Removed the `calc` tool (deterministic arithmetic evaluator) and its `calc.enabled` setting. The model can compute via `eval` instead.
+
+### Fixed
+
+- Fixed Anthropic Claude tool-call batching to clear and reapply the Claude-specific batch cap whenever the session model changes
+
+## [15.5.14] - 2026-05-29
+### Added
+
+- Added progress status output for `llm()` calls in `eval`, including the resolved model, tier, and returned character count
+- Added an `llm(prompt, opts)` helper to both `eval` runtimes (JavaScript and Python) for oneshot, stateless LLM calls. `opts.model` selects a tier — `"smol"` (`pi/smol`), `"default"` (the session's active model, falling back to `pi/default`), or `"slow"` (`pi/slow`, with high reasoning effort on reasoning-capable models). Pass `system` for a system prompt and a plain JSON-Schema `schema` to force a structured response (the helper returns the parsed object instead of the completion string). Calls carry no conversation history and expose no agent-visible tools; they route host-side through the existing tool bridge under the reserved name `__llm__` (`packages/coding-agent/src/eval/llm-bridge.ts`).
+
+### Fixed
+
+- Fixed a rewind/restore loop (and a follow-on handoff failure) caused by assistant turns whose tool results are off the resolved conversation path — e.g. selecting such a turn in `/tree`, restoring a session whose head is a mid-batch turn, or branching a new message in right after a turn whose tool calls hadn't resolved on that branch. `buildSessionContext` walks the leaf→root path, so any turn whose `tool_result` children live on a sibling branch (or below the leaf) ends up with **dangling** `tool_use` blocks. `transformMessages` then fabricated one synthetic `"aborted"`/`"No result provided"` result per dangling call plus a `<turn-aborted>` developer note, which both rendered as phantom failed calls on a turn that "hadn't run anything yet" and re-injected the failed batch into the model's context, prompting it to re-issue the batch (the spiral). `buildSessionContext` now rewrites **every** assistant turn on the resolved path that has dangling `tool_use`: it drops the unpaired `tool_use` blocks, drops `redacted_thinking` blocks, and clears `thinking` signatures (the provider encoder then emits them as plain text), dropping a turn entirely if no content remains. Turns whose tool calls *are* paired on the path are left untouched. Stripping the calls alone was insufficient — a *modified* assistant turn that still carried signed `thinking`/`redacted_thinking` was rejected by Anthropic with `messages.N.content.M: 'thinking' or 'redacted_thinking' blocks in the latest assistant message cannot be modified`, which surfaced as `Handoff generation failed: 400` on navigation. Live turns are unaffected — their results persist on the same path before any context rebuild.
+
+- Fixed external extension loading on Windows compiled binaries: bare `@oh-my-pi/pi-*` value imports (e.g. `import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai"`) failed with `Cannot find package '\$bunfs\root\packages\…'` because `legacy-pi-compat.ts` built shim override paths from a hardcoded POSIX `/$bunfs/root/packages` literal. Win32 normalised the leading slash to a backslash and the resulting path never resolved against the real bunfs mount (`<drive>:\~BUN\root\…`). The bunfs package root is now derived from `import.meta.dir`, so override paths stay platform-native on Windows, Linux, and macOS ([#1514](https://github.com/can1357/oh-my-pi/issues/1514)).
+- Fixed the interactive prompt showing no cursor in Ghostty. A prior change wired the editor's cursor mode to a new `getUseTerminalCursorMarker()` (which always reported the *requested* preference) instead of the resolved hardware-cursor visibility, so when Ghostty force-hid the hardware cursor the editor stayed in terminal-cursor (marker-only) mode and drew no glyph — leaving no visible caret with either `showHardwareCursor`/`PI_HARDWARE_CURSOR` value. The editor now follows `ui.getShowHardwareCursor()`: a hidden hardware cursor falls back to the steady software-cursor glyph (which still emits `CURSOR_MARKER` for IME positioning).
+
+### Changed
+
+- Changed the `eval` tool's `display()` JSON tree in the transcript to use the shared `renderJsonTreeLines` renderer (the same one behind tool args, MCP results, and subagent output) instead of its own format. This drops the redundant `Object(N)` / `Array(N)` type labels and the per-output `JSON output N` header in favor of type icons plus bare keys; the `display[N]` header is now shown only when a cell emits more than one `display()` value.
+- Reverted the sticky `Todos` panel task glyphs to the pre-15.5.12 checkbox icons: completed tasks render `theme.checkbox.checked` (not `theme.status.success`) and in-progress tasks render `theme.checkbox.unchecked` (not the running glyph). Removed the animated spinner entirely — in-progress tasks and pending tasks with a matching in-flight subagent still highlight via the `accent` colour, but the panel now paints once per state change instead of on an 80 ms timer. Subagent auto-checkmarking, the advancing window (`selectStickyTodoWindow`), `todoMatchesAnyDescription` highlighting, and the all-done close animation are unchanged.
+
 ## [15.5.13] - 2026-05-29
 ### Breaking Changes
 

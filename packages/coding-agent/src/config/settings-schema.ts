@@ -81,6 +81,7 @@ export type StatusLineSegmentId =
 	| "hostname"
 	| "cache_read"
 	| "cache_write"
+	| "cache_hit"
 	| "session_name"
 	| "usage";
 
@@ -2053,16 +2054,6 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "Debug",
 			description: "Enable the debug tool for DAP-based debugging",
-		},
-	},
-
-	"calc.enabled": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "tools",
-			label: "Calculator",
-			description: "Enable the calculator tool for basic calculations",
 		},
 	},
 
