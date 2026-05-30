@@ -1,13 +1,12 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-mnemosyne",
-	"version": "15.5.15",
+	"version": "15.6.0",
 	"description": "Local SQLite memory engine for Oh My Pi agents",
 	"homepage": "https://omp.sh",
 	"author": "Can Boluk",
 	"contributors": [
-		"Abdias J",
-		"Mario Zechner"
+		"Abdias J"
 	],
 	"license": "MIT",
 	"repository": {
@@ -65,6 +64,10 @@
 		"./beam": {
 			"types": "./src/core/beam/index.ts",
 			"import": "./src/core/beam/index.ts"
+		},
+		"./diagnose": {
+			"types": "./src/diagnose.ts",
+			"import": "./src/diagnose.ts"
 		},
 		"./mcp": {
 			"types": "./src/mcp-tools.ts",

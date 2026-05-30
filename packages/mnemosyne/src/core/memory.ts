@@ -194,13 +194,17 @@ function resolveRuntimeOptions(options: MnemosyneOptions): ResolvedMnemosyneRunt
 		const llmApiKey = options.llmApiKey ?? nestedLlm?.apiKey;
 		const llmMaxTokens = nestedLlm?.maxTokens;
 		const llmComplete = nestedLlm?.complete;
+		const llmExtractionPrompt = nestedLlm?.extractionPrompt;
+		const llmConsolidationPrompt = nestedLlm?.consolidationPrompt;
 		if (
 			llmEnabled !== undefined ||
 			llmBaseUrl !== undefined ||
 			llmApiKey !== undefined ||
 			llmModel !== undefined ||
 			llmMaxTokens !== undefined ||
-			llmComplete !== undefined
+			llmComplete !== undefined ||
+			llmExtractionPrompt !== undefined ||
+			llmConsolidationPrompt !== undefined
 		) {
 			llm = {
 				enabled: llmEnabled,
@@ -209,6 +213,8 @@ function resolveRuntimeOptions(options: MnemosyneOptions): ResolvedMnemosyneRunt
 				model: llmModel,
 				maxTokens: llmMaxTokens,
 				complete: llmComplete,
+				extractionPrompt: llmExtractionPrompt,
+				consolidationPrompt: llmConsolidationPrompt,
 			};
 		}
 	}
@@ -382,6 +388,10 @@ export class Mnemosyne {
 		if (this.#ownsDb) this.beam.close();
 	}
 
+	async flushExtractions(): Promise<void> {
+		await this.beam.flushExtractions();
+	}
+
 	remember(memory: string | RememberInput, options: RememberFacadeOptions = {}): string {
 		const content = typeof memory === "string" ? memory : memory.content;
 		return this.#withRuntimeOptions(() => this.beam.remember(content, toRememberOptions(memory, options)));
@@ -552,6 +562,10 @@ export function sleep(dryRun = false, bank: string | null = null): SleepResult {
 
 export function sleepAllSessions(dryRun = false, bank: string | null = null): SleepResult {
 	return defaultFor(bank).sleepAllSessions(dryRun);
+}
+
+export function flushExtractions(bank: string | null = null): Promise<void> {
+	return defaultFor(bank).flushExtractions();
 }
 
 export function scratchpadWrite(content: string, bank: string | null = null): string {
